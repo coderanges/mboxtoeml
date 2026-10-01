@@ -4,6 +4,7 @@ Serves the vanilla JS frontend from ./web and a small JSON API.
 No database, no web framework. Run:  python3 server.py [--host 127.0.0.1 --port 8000]
 """
 import argparse
+import datetime
 import json
 import os
 import threading
@@ -66,6 +67,39 @@ def validate_collision(raw):
     if value not in COLLISION_POLICIES:
         raise _bad(f"Unknown collision policy: {value!r}")
     return value
+
+
+def _parse_iso_date(raw, name):
+    """Parse YYYY-MM-DD to a date, or None when absent. Raises 400 on garbage."""
+    if raw is None or raw == "":
+        return None
+    if not isinstance(raw, str):
+        raise _bad(f"{name} must be YYYY-MM-DD")
+    try:
+        return datetime.date.fromisoformat(raw.strip())
+    except ValueError:
+        raise _bad(f"{name} must be YYYY-MM-DD")
+
+
+def _date_bounds(date_from, date_to):
+    """Inclusive UTC day boundaries as epoch ranges.
+
+    date_from 00:00:00 UTC <= instant < (date_to + 1 day) 00:00:00 UTC.
+    Timezone-aware message dates are compared by their true UTC instant;
+    naive ones were normalized to UTC at extraction. Missing/malformed
+    dates (date_ts None) never match an active range.
+    """
+    start = None
+    end_exclusive = None
+    if date_from is not None:
+        start = datetime.datetime(date_from.year, date_from.month, date_from.day,
+                                  tzinfo=datetime.timezone.utc).timestamp()
+    if date_to is not None:
+        end_exclusive = (
+            datetime.datetime(date_to.year, date_to.month, date_to.day,
+                              tzinfo=datetime.timezone.utc) + datetime.timedelta(days=1)
+        ).timestamp()
+    return start, end_exclusive
 
 
 def validate_job_filename(raw):
@@ -435,6 +469,11 @@ class Handler(BaseHTTPRequestHandler):
         limit = max(1, min(limit, 500))
         status_filter = (query.get("status") or ["all"])[0]
         search = ((query.get("q") or [""])[0] or "").strip().lower()
+        date_from = _parse_iso_date((query.get("date_from") or [""])[0], "date_from")
+        date_to = _parse_iso_date((query.get("date_to") or [""])[0], "date_to")
+        if date_from is not None and date_to is not None and date_from > date_to:
+            raise _bad("date_from must not be after date_to")
+        start, end_exclusive = _date_bounds(date_from, date_to)
         items = _read_result_lines(job)
         if status_filter in ("ok", "error", "skipped"):
             items = [it for it in items if it.get("status") == status_filter]
@@ -446,6 +485,18 @@ class Handler(BaseHTTPRequestHandler):
                 or search in str(it.get("to", "")).lower()
                 or search in str(it.get("filename", "")).lower()
             ]
+        if start is not None or end_exclusive is not None:
+            kept = []
+            for it in items:
+                ts = it.get("date_ts")
+                if not isinstance(ts, (int, float)) or isinstance(ts, bool):
+                    continue  # missing/malformed dates never match a range
+                if start is not None and ts < start:
+                    continue
+                if end_exclusive is not None and ts >= end_exclusive:
+                    continue
+                kept.append(it)
+            items = kept
         total = len(items)
         page = items[offset: offset + limit]
         payload = job_status_payload(job)

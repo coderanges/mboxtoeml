@@ -9,7 +9,7 @@ const S = {
   destination: { dir: "", collision: "rename" },
   conversion: { jobId: null, status: "idle", detail: null, cancelling: false, t0: 0, timer: null },
   stream: { es: null, poll: null },
-  results: { filter: "all", query: "", offset: 0, limit: 25 },
+  results: { filter: "all", query: "", dateFrom: "", dateTo: "", offset: 0, limit: 25 },
   viewer: { filename: null, eml: null, tab: "text" },
 };
 
@@ -405,6 +405,27 @@ $("search").addEventListener("input", () => {
     loadResults(true);
   }, 300);
 });
+function onDateChange() {
+  S.results.dateFrom = $("dateFrom").value;
+  S.results.dateTo = $("dateTo").value;
+  S.results.offset = 0;
+  loadResults(true);
+}
+$("dateFrom").addEventListener("change", onDateChange);
+$("dateTo").addEventListener("change", onDateChange);
+$("clearFilters").addEventListener("click", () => {
+  $("search").value = "";
+  $("dateFrom").value = "";
+  $("dateTo").value = "";
+  document.querySelector('input[name="filter"][value="all"]').checked = true;
+  S.results.query = "";
+  S.results.dateFrom = "";
+  S.results.dateTo = "";
+  S.results.filter = "all";
+  S.results.offset = 0;
+  showError("");
+  loadResults(true);
+});
 $("prevPage").addEventListener("click", () => {
   S.results.offset = Math.max(0, S.results.offset - S.results.limit);
   loadResults(true);
@@ -425,6 +446,7 @@ async function loadResults(announce) {
   const params = new URLSearchParams({
     offset: String(S.results.offset), limit: String(S.results.limit),
     status: S.results.filter, q: S.results.query,
+    date_from: S.results.dateFrom, date_to: S.results.dateTo,
   });
   try {
     const r = await api(`/api/jobs/${c.jobId}/results?${params}`);

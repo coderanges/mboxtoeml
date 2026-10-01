@@ -111,6 +111,8 @@ button:not(:disabled):hover, .btn:hover { border-color: var(--accent); }
 .summary[data-tone="err"] { border-color: var(--err); }
 .toolbar { display: flex; gap: 12px; flex-wrap: wrap; align-items: end; justify-content: space-between; }
 .search { flex: 1; min-width: 220px; }
+.date { display: grid; gap: 4px; font-size: 12.5px; color: var(--muted); }
+.date input { color: var(--ink); }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .seg label { padding: 7px 12px; cursor: pointer; border-left: 1px solid var(--line); }
 .seg label:first-child { border-left: 0; }

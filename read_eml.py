@@ -1,13 +1,29 @@
 import argparse
+import base64
+import binascii
+import codecs
 import html as _html
+import os
+import quopri
 import re
 import sys
 from email import policy
 from email.parser import BytesParser
 from html.parser import HTMLParser
-from urllib.parse import urlparse
 
 MAX_BODY_CHARS = 200_000
+# EML files above this size are refused for preview (the stdlib parser must
+# hold the whole file in RAM; refusing beats an OOM hang on a local utility).
+MAX_EML_BYTES = 250 * 1024 * 1024
+# Attachment/text payloads above this many encoded chars are sized/decoded
+# incrementally so a huge part never gets fully materialized just for metadata
+# or a 200KB preview. Small parts keep the exact legacy code path.
+_BIG_PAYLOAD_CHARS = 2_000_000
+_B64_CHUNK_CHARS = 4 * 256 * 1024  # multiple of 4
+_QP_CHUNK_CHARS = 1024 * 1024
+# Bodies are decoded only up to one char past the preview limit; anything
+# longer sets the truncated flag without ever holding the full text.
+_BODY_PREVIEW_LIMIT = MAX_BODY_CHARS + 1
 
 # Tags that can never appear in a preview: code execution, nesting, or
 # navigation/tracking primitives. Their content is dropped (script/style) or
@@ -22,21 +38,72 @@ _VOID_TAGS = frozenset({
     "area", "base", "br", "col", "embed", "hr", "img", "input",
     "link", "meta", "param", "source", "track", "wbr",
 })
-_REMOTE_ATTRS = frozenset({"src", "srcset", "poster", "background", "data", "lowsrc"})
-_URL_ATTRS = frozenset({"href", "src", "srcset", "poster", "background", "data", "action", "lowsrc"})
-_DANGEROUS_SCHEMES = ("javascript:", "vbscript:", "data:text/html")
+# Attributes that load a resource (or navigate, for href-like names).
+# The local name after any namespace prefix (e.g. xlink:href -> href) decides.
+_RESOURCE_ATTRS = frozenset({"src", "srcset", "poster", "background", "data", "lowsrc", "href", "action"})
+# Schemes that must never survive in any attribute value.
+_DANGEROUS_SCHEMES = ("javascript:", "vbscript:", "file:", "about:", "data:text/html")
+# data: URLs are only kept as small raster/vector images; everything else
+# (html, scripts, huge blobs) is dropped. 1M chars ~= 750KB decoded.
+_DATA_URL_MAX_CHARS = 1_000_000
+_ALLOWED_DATA_PREFIXES = (
+    "data:image/png", "data:image/jpeg", "data:image/gif",
+    "data:image/webp", "data:image/bmp", "data:image/svg+xml",
+)
 
 
-def _is_remote_url(value):
-    text = (value or "").strip().lower()
-    if text.startswith(("http://", "https://", "ftp://", "//")):
+def _normalize_url(value):
+    """Unescape entities, strip C0 controls/whitespace (browsers ignore them
+    inside schemes, e.g. ``java\\tscript:``), and lowercase for comparison."""
+    try:
+        text = _html.unescape(value or "")
+    except Exception:
+        text = value or ""
+    text = re.sub(r"[\x00-\x20\x7f]+", "", text).lower()
+    return text
+
+
+def _is_dangerous_url(value):
+    return _normalize_url(value).startswith(_DANGEROUS_SCHEMES)
+
+
+def _is_allowed_data_url(value):
+    norm = _normalize_url(value)
+    if not norm.startswith("data:"):
+        return False
+    if len(value) > _DATA_URL_MAX_CHARS:
+        return False
+    return norm.startswith(_ALLOWED_DATA_PREFIXES)
+
+
+def _is_safe_resource_url(value):
+    """Allowlist for resource-loading attributes: relative paths, cid:,
+    and small data:image/* only. Everything else (remote, file:, about:,
+    executable data:) is blocked to prevent tracking and local access."""
+    norm = _normalize_url(value)
+    if not norm:
+        return False
+    if norm.startswith("cid:") or norm.startswith("#"):
+        return True
+    if norm.startswith("//"):
+        return False  # protocol-relative remote reference
+    if norm.startswith("data:"):
+        return _is_allowed_data_url(value)
+    # No scheme at all -> relative reference, safe.
+    if ":" not in norm:
         return True
     return False
 
 
-def _is_dangerous_url(value):
-    text = (value or "").strip().lower().lstrip("\x00 ")
-    return text.startswith(_DANGEROUS_SCHEMES)
+def _srcset_has_blocked(value):
+    """Check every candidate in a srcset list; fail closed on any bad one."""
+    for candidate in (value or "").split(","):
+        url = candidate.strip().split()
+        if not url:
+            continue
+        if _is_dangerous_url(url[0]) or not _is_safe_resource_url(url[0]):
+            return True
+    return False
 
 
 class _PreviewSanitizer(HTMLParser):
@@ -62,13 +129,23 @@ class _PreviewSanitizer(HTMLParser):
             if name.startswith("on") or name == "style":
                 self.blocked += 1
                 continue
-            if name in _URL_ATTRS and isinstance(value, str):
+            if isinstance(value, str):
+                # Dangerous schemes are rejected in ANY attribute: browsers
+                # decode entities and ignore C0 whitespace inside schemes, and
+                # namespaced variants (xlink:href) must not slip through.
                 if _is_dangerous_url(value):
                     self.blocked += 1
                     continue
-                if name in _REMOTE_ATTRS and _is_remote_url(value):
-                    self.blocked += 1
-                    continue
+                local = name.split(":")[-1]
+                is_link_href = tag == "a" and local == "href"
+                if local in _RESOURCE_ATTRS and not is_link_href:
+                    if local == "srcset":
+                        if _srcset_has_blocked(value):
+                            self.blocked += 1
+                            continue
+                    elif not _is_safe_resource_url(value):
+                        self.blocked += 1
+                        continue
             if value is None:
                 kept.append(name)
             else:
@@ -152,6 +229,195 @@ def html_to_text(html_value):
         return re.sub(r"<[^>]+>", " ", html_value)[:MAX_BODY_CHARS]
 
 
+def _raw_payload(part):
+    """Leaf payload string without triggering a full-size transient copy.
+
+    On CPython 3.12 ``get_payload(decode=False)`` runs ``_has_surrogates``
+    over the whole payload, transiently duplicating huge parts. Reading the
+    long-standing ``_payload`` attribute directly avoids that copy; anything
+    unexpected falls back to the public API.
+    """
+    try:
+        payload = part._payload
+        if isinstance(payload, str):
+            return payload
+    except AttributeError:
+        pass
+    try:
+        return part.get_payload(decode=False)
+    except Exception:
+        return None
+
+
+def _cte(part):
+    try:
+        return (part.get("Content-Transfer-Encoding") or "").lower().split(";")[0].strip()
+    except Exception:
+        return ""
+
+
+def _b64_decoded_size(text):
+    """Exact decoded size of base64 text with O(chunk) peak memory."""
+    total = 0
+    carry = ""
+    n = len(text)
+    i = 0
+    while i < n:
+        chunk = carry + re.sub(r"\s+", "", text[i:i + _B64_CHUNK_CHARS])
+        i += _B64_CHUNK_CHARS
+        if i < n:
+            rem = len(chunk) % 4
+            if rem:
+                chunk, carry = chunk[:-rem], chunk[-rem:]
+            else:
+                carry = ""
+        else:
+            carry = ""
+        if chunk:
+            total += len(base64.b64decode(chunk, validate=False))
+    if carry:
+        total += len(base64.b64decode(carry, validate=False))
+    return total
+
+
+def _qp_split_head(buffer):
+    """Split buffer so head never ends mid-escape (``=``, ``=X``) or mid
+    soft-break (trailing CR that may precede LF). Returns (head, tail)."""
+    cut = len(buffer)
+    while cut > 0 and cut > len(buffer) - 4 and buffer[cut - 1] in "=\r\n":
+        cut -= 1
+    if cut <= 0:
+        return "", buffer
+    return buffer[:cut], buffer[cut:]
+
+
+def _qp_decoded_size(text):
+    """Exact decoded size of quoted-printable text with O(chunk) peak."""
+    total = 0
+    carry = ""
+    n = len(text)
+    i = 0
+    while i < n:
+        buffer = carry + text[i:i + _QP_CHUNK_CHARS]
+        i += _QP_CHUNK_CHARS
+        if i < n:
+            head, carry = _qp_split_head(buffer)
+        else:
+            head, carry = buffer, ""
+        if head:
+            total += len(quopri.decodestring(head.encode("ascii", errors="ignore"), header=False))
+    if carry:
+        total += len(quopri.decodestring(carry.encode("ascii", errors="ignore"), header=False))
+    return total
+
+
+def _attachment_payload_size(part):
+    """Decoded attachment size without materializing huge payloads.
+
+    Small payloads use the exact legacy path. Large base64/QP payloads are
+    measured with chunked decoders (exact for well-formed input, O(chunk)
+    memory). Anything undecodable reports 0, matching legacy tolerance.
+    """
+    raw = _raw_payload(part)
+    if raw is None or isinstance(raw, list):
+        return 0
+    if not isinstance(raw, str):
+        try:
+            return len(raw)
+        except Exception:
+            return 0
+    if len(raw) <= _BIG_PAYLOAD_CHARS:
+        try:
+            payload = part.get_payload(decode=True)
+            return len(payload) if isinstance(payload, (bytes, bytearray)) else 0
+        except Exception:
+            return 0
+    try:
+        cte = _cte(part)
+        if cte == "base64":
+            return _b64_decoded_size(raw)
+        if cte in ("quoted-printable", "quotedprintable", "qp"):
+            return _qp_decoded_size(raw)
+        return len(raw.encode("ascii", errors="replace"))
+    except (binascii.Error, ValueError):
+        return 0
+    except Exception:
+        return 0
+
+
+def _iter_decoded_bytes(raw, cte):
+    """Yield decoded bytes for one part without holding the whole output."""
+    if cte == "base64":
+        text = re.sub(r"\s+", "", raw)
+        step = _B64_CHUNK_CHARS
+        carry = ""
+        n = len(text)
+        i = 0
+        while i < n:
+            chunk = carry + text[i:i + step]
+            i += step
+            if i < n:
+                rem = len(chunk) % 4
+                if rem:
+                    chunk, carry = chunk[:-rem], chunk[-rem:]
+                else:
+                    carry = ""
+            if chunk:
+                yield base64.b64decode(chunk, validate=False)
+        return
+    if cte in ("quoted-printable", "quotedprintable", "qp"):
+        carry = ""
+        n = len(raw)
+        i = 0
+        while i < n:
+            buffer = carry + raw[i:i + _QP_CHUNK_CHARS]
+            i += _QP_CHUNK_CHARS
+            if i < n:
+                head, carry = _qp_split_head(buffer)
+            else:
+                head, carry = buffer, ""
+            if head:
+                yield quopri.decodestring(head.encode("ascii", errors="ignore"), header=False)
+        if carry:
+            yield quopri.decodestring(carry.encode("ascii", errors="ignore"), header=False)
+        return
+    head = raw[: (_BODY_PREVIEW_LIMIT + 1024) * 4]
+    yield head.encode("ascii", errors="replace")
+
+
+def _decode_text_preview(part, limit=_BODY_PREVIEW_LIMIT):
+    """Decode a text part only until ``limit`` chars are available."""
+    raw = _raw_payload(part)
+    if not isinstance(raw, str):
+        return _safe_get_content(part)
+    if len(raw) <= _BIG_PAYLOAD_CHARS:
+        return _safe_get_content(part)
+    try:
+        charset = part.get_content_charset() or "utf-8"
+    except Exception:
+        charset = "utf-8"
+    try:
+        decoder = codecs.getincrementaldecoder(charset)(errors="replace")
+    except (LookupError, ValueError):
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    out = []
+    total = 0
+    try:
+        for chunk in _iter_decoded_bytes(raw, _cte(part)):
+            try:
+                text = decoder.decode(chunk, False)
+            except Exception:
+                text = chunk.decode("utf-8", errors="replace")
+            if text:
+                out.append(text)
+                total += len(text)
+                if total >= limit:
+                    break
+    except Exception:
+        pass
+    return "".join(out)[:limit]
+
+
 def _safe_get_content(part):
     """Return decoded part content without raising on broken charsets."""
     try:
@@ -213,9 +479,9 @@ def _extract_bodies(message):
                 continue
             try:
                 if ctype == "text/plain" and text_body is None:
-                    text_body = _safe_get_content(part)
+                    text_body = _decode_text_preview(part)
                 elif ctype == "text/html" and html_body is None:
-                    html_body = _safe_get_content(part)
+                    html_body = _decode_text_preview(part)
             except Exception:
                 continue
             if text_body and html_body:
@@ -227,11 +493,11 @@ def _extract_bodies(message):
             ctype = ""
         try:
             if ctype == "text/plain":
-                text_body = _safe_get_content(message)
+                text_body = _decode_text_preview(message)
             elif ctype == "text/html":
-                html_body = _safe_get_content(message)
+                html_body = _decode_text_preview(message)
             elif ctype.startswith("text/"):
-                text_body = _safe_get_content(message)
+                text_body = _decode_text_preview(message)
         except Exception:
             pass
     if not text_body and html_body:
@@ -283,11 +549,7 @@ def _collect_attachments(message):
         is_inline_file = disp == "inline" and filename
         if not (is_attachment or is_inline_file):
             continue
-        try:
-            payload = part.get_payload(decode=True)
-            size = len(payload) if isinstance(payload, (bytes, bytearray)) else 0
-        except Exception:
-            size = 0
+        size = _attachment_payload_size(part)
         attachments.append(
             {
                 "filename": filename or "unnamed",
@@ -301,6 +563,13 @@ def _collect_attachments(message):
 
 def parse_eml(eml_file, max_body_chars=MAX_BODY_CHARS):
     """Parse an EML file into a JSON-safe dict for API/UI use."""
+    try:
+        if os.path.getsize(eml_file) > MAX_EML_BYTES:
+            raise ValueError(
+                f"EML file too large to preview (limit {MAX_EML_BYTES // (1024 * 1024)} MB)"
+            )
+    except OSError:
+        pass
     with open(eml_file, "rb") as eml_data:
         msg = BytesParser(policy=policy.default).parse(eml_data)
 

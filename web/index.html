@@ -112,12 +112,15 @@
       <label class="search">Search
         <input id="search" type="search" placeholder="Subject, sender, recipient, filename…" autocomplete="off" />
       </label>
+      <label class="date">From <input id="dateFrom" type="date" /></label>
+      <label class="date">To <input id="dateTo" type="date" /></label>
       <div class="seg" role="radiogroup" aria-label="Filter results">
         <label><input type="radio" name="filter" value="all" checked /> All</label>
         <label><input type="radio" name="filter" value="ok" /> Successful</label>
         <label><input type="radio" name="filter" value="error" /> Failed</label>
         <label><input type="radio" name="filter" value="skipped" /> Skipped</label>
       </div>
+      <button id="clearFilters" type="button">Clear</button>
     </div>
     <p id="resultsMeta" class="muted small" role="status">No conversion results yet.</p>
     <ul id="resultsList" class="results"></ul>

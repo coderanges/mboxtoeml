@@ -69,3 +69,15 @@
 - [x] Delete `gui.py`, remove dead imports; core stays CLI-usable (`mbox2eml.py`, `read_eml.py`, `modify_eml.py`, `server.py --serve`)
 - [x] Run full suite + live server smoke (inspect→convert→results→eml→modify via real HTTP)
 - [x] Review diff: no dead code, no duplicated sanitizers, no FS escape, no unsafe HTML render, no new deps
+
+## 8. Final hardening + date search (done, stdlib only, no redesign)
+- [ ] Baseline: 50/50 suite green + Takeout smoke re-verified
+- [ ] Attachment memory audit: measure 10/50/250MB fixtures (time, peak RSS, materialization)
+- [ ] Attachment metadata without full decode where stdlib allows; keep counts/names/types/sizes exact
+- [ ] HTML preview audit: mixed-case, entities, encoded schemes, SVG, CSS url(), srcset/poster, malformed tags; fail closed
+- [ ] Decide `data:` URL policy (retain `data:image/*` capped, block executable schemes); cap large data URLs
+- [ ] Date search backend: `date_from`/`date_to` inclusive `YYYY-MM-DD`, UTC instant semantics, missing/malformed never match range
+- [ ] Result items carry normalized date (`date`, `date_ts`); no EML re-parse per query
+- [ ] Results UI: From/To + Clear, server-side, pagination-safe, `date_from > date_to` clean error
+- [ ] Tests: attachments, HTML bypasses, 13 date-filter cases via HTTP
+- [ ] Regression: full suite + Takeout smoke (search, date filter, view, HTML, modify, download, SSE/poll, cancel, atomic collisions, spill, eviction, traversal, no tracebacks)

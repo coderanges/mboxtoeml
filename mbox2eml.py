@@ -1,4 +1,5 @@
 import argparse
+import datetime
 import mailbox
 import os
 import re
@@ -83,6 +84,26 @@ def _safe_addr(message, header):
         return _decode_header_value(message.get(header, ""))
     except Exception:
         return ""
+
+
+def parse_date_to_timestamp(value):
+    """Parse an RFC email date to a UTC epoch float, or None if missing/bad.
+
+    Timezone-aware dates are normalized to their true instant; naive dates
+    are assumed to be UTC. Never raises; never invents a date.
+    """
+    if not value:
+        return None
+    try:
+        parsed = parsedate_to_datetime(value)
+    except (TypeError, ValueError, IndexError, OverflowError, AttributeError):
+        return None
+    try:
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+        return parsed.timestamp()
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _write_rename_atomic(output_dir, filename, data):
@@ -205,13 +226,17 @@ def convert_detailed(
     ``errors`` and processing continues.
 
     ``on_item`` is called per message with the item dict
-    {index,status,subject,from,to,filename,error} as soon as it is known, allowing
-    callers to stream results to disk instead of holding them all in RAM.
+    {index,status,subject,from,to,date,date_ts,filename,error} as soon as it
+    is known, allowing callers to stream results to disk instead of holding
+    them all in RAM.
     When ``store_items`` is False the returned ``items`` list is empty and
     the caller must rely on ``on_item``.
 
+    ``date`` is the raw Date header ("" when missing); ``date_ts`` is the
+    UTC epoch float or None when the header is missing or unparseable.
+
     Report: {created, errors[{index,subject,error}], skipped[{index,subject,filename}],
-             items[{index,status,subject,from,to,filename,error}],
+             items[{index,status,subject,from,to,date,date_ts,filename,error}],
              total, succeeded, failed, skipped_count, cancelled}
     """
     if collision not in COLLISION_POLICIES:
@@ -253,6 +278,8 @@ def convert_detailed(
                 subject_hint = _safe_subject(message)
                 from_hint = _safe_addr(message, "From")
                 to_hint = _safe_addr(message, "To")
+                date_raw = _decode_header_value(message.get("Date", ""))
+                date_ts = parse_date_to_timestamp(message.get("Date", ""))
                 data = message.as_bytes()
                 eml_filename = _make_filename(i, message)
                 if collision == "overwrite":
@@ -266,6 +293,7 @@ def convert_detailed(
                         _emit(
                             {"index": i, "status": "skipped", "subject": subject_hint,
                              "from": from_hint, "to": to_hint,
+                             "date": date_raw, "date_ts": date_ts,
                              "filename": eml_filename, "error": ""}
                         )
                         continue
@@ -281,6 +309,7 @@ def convert_detailed(
                 _emit(
                     {"index": i, "status": "ok", "subject": subject_hint,
                      "from": from_hint, "to": to_hint,
+                     "date": date_raw, "date_ts": date_ts,
                      "filename": eml_filename, "error": ""}
                 )
 
@@ -288,10 +317,19 @@ def convert_detailed(
                     progress_callback(i, eml_filename, total)
             except Exception as exc:
                 err = f"{type(exc).__name__}: {exc}"
-                errors.append({"index": i, "subject": _safe_subject(message), "error": err})
+                try:
+                    err_date_raw = _decode_header_value(message.get("Date", ""))
+                    err_date_ts = parse_date_to_timestamp(message.get("Date", ""))
+                    err_from = _safe_addr(message, "From")
+                    err_to = _safe_addr(message, "To")
+                    err_subject = _safe_subject(message)
+                except Exception:
+                    err_date_raw, err_date_ts, err_from, err_to, err_subject = "", None, "", "", ""
+                errors.append({"index": i, "subject": err_subject, "error": err})
                 _emit(
-                    {"index": i, "status": "error", "subject": _safe_subject(message),
-                     "from": _safe_addr(message, "From"), "to": _safe_addr(message, "To"),
+                    {"index": i, "status": "error", "subject": err_subject,
+                     "from": err_from, "to": err_to,
+                     "date": err_date_raw, "date_ts": err_date_ts,
                      "filename": "", "error": err}
                 )
                 if error_callback:
