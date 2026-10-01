@@ -285,6 +285,9 @@ class OutputPickerFrontendContractTests(unittest.TestCase):
         self.assertIn("Choose Output Folder", html)
         self.assertIn('webkitdirectory', html)
         self.assertIn("/api/output-folder", js)
+        # folder-only primary with guarded fallback (file picks rejected)
+        self.assertIn("showDirectoryPicker", js)
+        self.assertIn("choose a folder, not a file", js.lower())
         # no server-driven dialog anymore
         self.assertNotIn("browseDialog", html)
         self.assertNotIn("browseDialog", js)

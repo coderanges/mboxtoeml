@@ -262,20 +262,13 @@ dz.addEventListener("keydown", (e) => {
 dz.addEventListener("click", () => $("pickBtn").click());
 
 // ---------- output folder picker (same file-picker interface as MBOX) ----------
-// The browser's directory-mode file picker reveals only the chosen folder's
-// name, so it is created/reused by name under the server output root and the
+// The browser's directory picker reveals only the chosen folder's name, so
+// it is created/reused by name under the server output root and the
 // effective path fills the output field. Cancelling sends nothing.
-$("pickOutBtn").addEventListener("click", () => $("dirInput").click());
-$("dirInput").addEventListener("change", async () => {
-  const files = $("dirInput").files;
-  $("dirInput").value = "";
-  if (!files || !files.length) return; // user cancelled: keep previous value
-  const rel = files[0].webkitRelativePath || "";
-  const name = rel.split("/")[0];
-  if (!name) {
-    showError("Could not determine the chosen folder name.");
-    return;
-  }
+// Primary: showDirectoryPicker() is folder-only by construction (it cannot
+// pick files). Fallback: directory-mode <input>, guarded so a file pick is
+// rejected with a clear message instead of being silently misused.
+async function chooseOutputByName(name) {
   showError("");
   try {
     const r = await api("/api/output-folder", {
@@ -289,6 +282,33 @@ $("dirInput").addEventListener("change", async () => {
   } catch (e) {
     showError(e.message);
   }
+}
+$("pickOutBtn").addEventListener("click", async () => {
+  if (window.showDirectoryPicker) {
+    try {
+      const handle = await window.showDirectoryPicker({ id: "mbox2eml-output" });
+      if (handle && handle.name) await chooseOutputByName(handle.name);
+    } catch (e) {
+      if (e && e.name === "AbortError") return; // user cancelled: keep previous value
+      showError(`Folder picker failed (${(e && e.message) || e}); type the path instead.`);
+    }
+    return;
+  }
+  $("dirInput").click();
+});
+$("dirInput").addEventListener("change", async () => {
+  const files = $("dirInput").files;
+  $("dirInput").value = "";
+  if (!files || !files.length) {
+    showError("That folder appears to be empty — pick a folder containing at least one file, or type the path instead.");
+    return;
+  }
+  const rel = files[0].webkitRelativePath || "";
+  if (!rel) {
+    showError("Please choose a folder, not a file.");
+    return;
+  }
+  await chooseOutputByName(rel.split("/")[0]);
 });
 // ---------- destination + collision ----------
 $("outputDir").addEventListener("input", () => {
