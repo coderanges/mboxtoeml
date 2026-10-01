@@ -194,174 +194,104 @@ class UploadTests(unittest.TestCase):
         self.assertIn("enter a server path manually", html.lower())
 
 
-class NativePickerTests(unittest.TestCase):
+class OutputFolderTests(unittest.TestCase):
     def _server(self):
         httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         t = threading.Thread(target=httpd.serve_forever, daemon=True)
         t.start()
         return httpd, t, f"http://127.0.0.1:{httpd.server_address[1]}"
 
-    def _pick(self, base, initial_dir=""):
+    def _mkdir(self, base, name):
         req = urllib.request.Request(
-            base + "/api/browse/native",
-            data=json.dumps({"initial_dir": initial_dir}).encode(),
+            base + "/api/output-folder", data=json.dumps({"name": name}).encode(),
             headers={"Content-Type": "application/json"}, method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=15) as r:
+            with urllib.request.urlopen(req, timeout=10) as r:
                 return r.status, json.loads(r.read().decode())
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read().decode())
 
-    def test_native_pick_returns_validated_path(self):
+    def test_output_folder_create_reuse_and_convert(self):
+        import shutil
         import server as srv
-        with tempfile.TemporaryDirectory() as td:
-            orig = srv.choose_output_directory
-            srv.choose_output_directory = lambda initial_dir=None: td
-            httpd, t, base = self._server()
-            try:
-                code, data = self._pick(base, td)
-                self.assertEqual(code, 200)
-                self.assertEqual(data["path"], os.path.realpath(td))
-            finally:
-                srv.choose_output_directory = orig
-                httpd.shutdown()
-                t.join(timeout=5)
-
-    def test_native_pick_cancel_is_silent_success(self):
-        import server as srv
-        orig = srv.choose_output_directory
-        srv.choose_output_directory = lambda initial_dir=None: ""
         httpd, t, base = self._server()
+        name = "mbox2eml-pick-test"
+        target = os.path.join(srv._output_root(), name)
         try:
-            code, data = self._pick(base)
+            code, data = self._mkdir(base, name)
+            self.assertEqual(code, 200, data)
+            self.assertEqual(data["path"], target)
+            self.assertTrue(os.path.isdir(target))
+            # existing folder is reused, not an error
+            code, data = self._mkdir(base, name)
             self.assertEqual(code, 200)
-            self.assertTrue(data.get("cancelled"))
-            self.assertIsNone(data.get("path"))
-        finally:
-            srv.choose_output_directory = orig
-            httpd.shutdown()
-            t.join(timeout=5)
-
-    def test_native_pick_busy_and_unavailable(self):
-        import server as srv
-        from native_picker import PickerBusy, PickerUnavailable
-        httpd, t, base = self._server()
-        try:
-            orig = srv.choose_output_directory
-            def busy(initial_dir=None):
-                raise PickerBusy("A folder picker is already open")
-            srv.choose_output_directory = busy
-            code, data = self._pick(base)
-            self.assertEqual(code, 409)
-            self.assertIn("error", data)
-            def gone(initial_dir=None):
-                raise PickerUnavailable("Native picker unavailable (no display)")
-            srv.choose_output_directory = gone
-            code, data = self._pick(base)
-            self.assertEqual(code, 503)
-            self.assertIn("type the folder path instead", data["error"])
-            srv.choose_output_directory = orig
-        finally:
-            httpd.shutdown()
-            t.join(timeout=5)
-
-    def test_old_browse_api_is_gone(self):
-        httpd, t, base = self._server()
-        try:
-            try:
-                urllib.request.urlopen(base + "/api/browse?path=", timeout=5)
-                self.fail("expected HTTP error")
-            except urllib.error.HTTPError as e:
-                self.assertEqual(e.code, 404)
-            req = urllib.request.Request(
-                base + "/api/browse/mkdir", data=json.dumps({"path": "", "name": "x"}).encode(),
-                headers={"Content-Type": "application/json"}, method="POST")
-            try:
-                urllib.request.urlopen(req, timeout=5)
-                self.fail("expected HTTP error")
-            except urllib.error.HTTPError as e:
-                self.assertEqual(e.code, 404)
-        finally:
-            httpd.shutdown()
-            t.join(timeout=5)
-
-    def test_picked_path_flows_into_conversion(self):
-        import server as srv
-        with tempfile.TemporaryDirectory() as td:
-            mp = Path(td) / "s.mbox"
+            # picked folder flows straight into conversion
+            mp = os.path.join(tempfile.mkdtemp(), "s.mbox")
             with open(mp, "wb") as f:
                 f.write(_mbox_bytes(1))
-            out = str(Path(td) / "picked-out")
-            os.makedirs(out)
-            orig = srv.choose_output_directory
-            srv.choose_output_directory = lambda initial_dir=None: out
-            httpd, t, base = self._server()
-            try:
-                code, data = self._pick(base, out)
-                self.assertEqual(code, 200)
+            req = urllib.request.Request(
+                base + "/api/convert",
+                data=json.dumps({"mbox_path": mp, "output_dir": data["path"],
+                                 "collision": "overwrite"}).encode(),
+                headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(req, timeout=10) as r:
+                self.assertEqual(r.status, 202)
+        finally:
+            shutil.rmtree(target, ignore_errors=True)
+            httpd.shutdown()
+            t.join(timeout=5)
+
+    def test_output_folder_rejects_bad_names(self):
+        httpd, t, base = self._server()
+        try:
+            for bad in ("../x", "a/b", "a\\b", "", ".", "..", "a\x01b", "x" * 101):
+                code, _ = self._mkdir(base, bad)
+                self.assertEqual(code, 400, repr(bad))
+            code, _ = self._mkdir(base, 123)
+            self.assertEqual(code, 400)
+        finally:
+            httpd.shutdown()
+            t.join(timeout=5)
+
+    def test_old_picker_apis_are_gone(self):
+        httpd, t, base = self._server()
+        try:
+            for method, path in (("GET", "/api/browse?path="),
+                                 ("POST", "/api/browse/mkdir"),
+                                 ("POST", "/api/browse/native")):
                 req = urllib.request.Request(
-                    base + "/api/convert",
-                    data=json.dumps({"mbox_path": str(mp), "output_dir": data["path"],
-                                     "collision": "overwrite"}).encode(),
-                    headers={"Content-Type": "application/json"}, method="POST")
-                with urllib.request.urlopen(req, timeout=10) as r:
-                    self.assertEqual(r.status, 202)
-                self.assertTrue(os.path.isdir(out))
-            finally:
-                srv.choose_output_directory = orig
-                httpd.shutdown()
-                t.join(timeout=5)
+                    base + path, data=b"{}" if method == "POST" else None,
+                    headers={"Content-Type": "application/json"}, method=method)
+                try:
+                    urllib.request.urlopen(req, timeout=5)
+                    self.fail(f"expected HTTP error for {method} {path}")
+                except urllib.error.HTTPError as e:
+                    self.assertEqual(e.code, 404, path)
+        finally:
+            httpd.shutdown()
+            t.join(timeout=5)
 
 
-class ValidateChosenDirectoryTests(unittest.TestCase):
-    def test_accepts_real_directory(self):
-        from native_picker import validate_chosen_directory
-        with tempfile.TemporaryDirectory() as td:
-            self.assertEqual(validate_chosen_directory(td), os.path.realpath(td))
-
-    def test_rejects_bad_paths(self):
-        from native_picker import validate_chosen_directory
-        with tempfile.TemporaryDirectory() as td:
-            with self.assertRaises(ValueError):
-                validate_chosen_directory("")
-            with self.assertRaises(ValueError):
-                validate_chosen_directory("a\x00b")
-            with self.assertRaises(FileNotFoundError):
-                validate_chosen_directory(os.path.join(td, "vanished"))
-            f = os.path.join(td, "file.txt")
-            with open(f, "w") as handle:
-                handle.write("x")
-            with self.assertRaises(NotADirectoryError):
-                validate_chosen_directory(f)
-
-    def test_rejects_inaccessible_directory(self):
-        from native_picker import validate_chosen_directory
-        with tempfile.TemporaryDirectory() as td:
-            target = os.path.join(td, "locked")
-            os.makedirs(target, mode=0)
-            try:
-                if os.geteuid() == 0:
-                    self.skipTest("root bypasses permission bits")
-                with self.assertRaises(PermissionError):
-                    validate_chosen_directory(target)
-            finally:
-                os.chmod(target, 0o700)
-
-
-class NativeFrontendContractTests(unittest.TestCase):
-    def test_browse_button_uses_native_bridge(self):
+class OutputPickerFrontendContractTests(unittest.TestCase):
+    def test_output_uses_same_picker_interface_as_mbox(self):
         html = Path("web/index.html").read_text()
         js = Path("web/app.js").read_text()
         css = Path("web/styles.css").read_text()
-        self.assertIn('id="browseOutBtn"', html)
-        self.assertIn("/api/browse/native", js)
-        self.assertIn("Choosing", js)  # busy state while the OS dialog is open
-        # custom in-browser folder browser is gone
+        # MBOX control...
+        self.assertIn('id="pickBtn"', html)
+        self.assertIn('id="fileInput"', html)
+        # ...and the output control mirrors it: button + directory-mode input.
+        self.assertIn('id="pickOutBtn"', html)
+        self.assertIn("Choose Output Folder", html)
+        self.assertIn('webkitdirectory', html)
+        self.assertIn("/api/output-folder", js)
+        # no server-driven dialog anymore
         self.assertNotIn("browseDialog", html)
         self.assertNotIn("browseDialog", js)
-        self.assertNotIn("/api/browse?", js)
+        self.assertNotIn("/api/browse/native", js)
         self.assertNotIn("/api/browse/mkdir", js)
         self.assertNotIn("browse-list", html + css)
+        self.assertNotIn("native_picker", open("server.py").read())
 
 
 if __name__ == "__main__":

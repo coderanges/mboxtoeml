@@ -261,35 +261,35 @@ dz.addEventListener("keydown", (e) => {
 });
 dz.addEventListener("click", () => $("pickBtn").click());
 
-// ---------- output folder picker (native OS dialog via server bridge) ----------
-$("browseOutBtn").addEventListener("click", async () => {
-  const btn = $("browseOutBtn");
-  if (btn.disabled) return;
+// ---------- output folder picker (same file-picker interface as MBOX) ----------
+// The browser's directory-mode file picker reveals only the chosen folder's
+// name, so it is created/reused by name under the server output root and the
+// effective path fills the output field. Cancelling sends nothing.
+$("pickOutBtn").addEventListener("click", () => $("dirInput").click());
+$("dirInput").addEventListener("change", async () => {
+  const files = $("dirInput").files;
+  $("dirInput").value = "";
+  if (!files || !files.length) return; // user cancelled: keep previous value
+  const rel = files[0].webkitRelativePath || "";
+  const name = rel.split("/")[0];
+  if (!name) {
+    showError("Could not determine the chosen folder name.");
+    return;
+  }
   showError("");
-  btn.disabled = true;
-  const original = btn.textContent;
-  btn.textContent = "Choosing\u2026";
   try {
-    const current = $("outputDir").value.trim();
-    const r = await api("/api/browse/native", {
+    const r = await api("/api/output-folder", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ initial_dir: current }),
+      body: JSON.stringify({ name }),
     });
-    if (r.cancelled) return; // user dismissed the native dialog: keep previous value
-    if (r.path) {
-      $("outputDir").value = r.path;
-      S.destination.dir = r.path;
-      renderReadiness();
-      $("outputDir").focus();
-    }
+    $("outputDir").value = r.path;
+    S.destination.dir = r.path;
+    renderReadiness();
+    $("outputDir").focus();
   } catch (e) {
     showError(e.message);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = original;
   }
 });
-
 // ---------- destination + collision ----------
 $("outputDir").addEventListener("input", () => {
   S.destination.dir = $("outputDir").value.trim();

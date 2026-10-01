@@ -102,3 +102,9 @@
 - [x] Server-side validation of picked path (realpath, isdir, vanished, permission)
 - [x] Removed GET /api/browse, POST /api/browse/mkdir, dialog, Up/Create, CSS/JS, BrowseTests
 - [x] Browse… fills output field; cancel preserves value silently; narrow stacking verified
+
+## 12. Output picker parity with MBOX picker (done)
+- [x] Removed custom dialog + GET /api/browse + POST /api/browse/mkdir + tkinter bridge
+- [x] Choose Output Folder button + webkitdirectory input (same picker interface as MBOX)
+- [x] POST /api/output-folder resolves folder name under server output root, strict validation
+- [x] Cancel sends nothing; manual path + Use default retained

@@ -18,7 +18,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from mbox2eml import COLLISION_POLICIES, convert_detailed, inspect_mbox
 from modify_eml import read_and_modify_eml, validate_header_name, validate_header_value
-from native_picker import PickerBusy, PickerUnavailable, choose_output_directory, validate_chosen_directory
 from read_eml import parse_eml
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -81,6 +80,13 @@ def validate_output_dir(raw, create=False):
     if create:
         os.makedirs(path, exist_ok=True)
     return path
+
+
+def _output_root():
+    """Server directory under which picked output folders live."""
+    home = os.path.expanduser("~")
+    base = home if os.path.isdir(home) else os.getcwd()
+    return os.path.realpath(base)
 
 
 def validate_collision(raw):
@@ -471,9 +477,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/health":
                 return self._send_json(200, {"ok": True})
             if path == "/api/defaults":
-                home = os.path.expanduser("~")
-                base = home if os.path.isdir(home) else os.getcwd()
-                return self._send_json(200, {"output_dir": os.path.join(base, "mbox2eml-output")})
+                return self._send_json(200, {"output_dir": os.path.join(_output_root(), "mbox2eml-output")})
             if path.startswith("/api/jobs/") and path.endswith("/events"):
                 parts = path.split("/")
                 # /api/jobs/<id>/events
@@ -519,8 +523,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_eml_modify()
             if path == "/api/uploads":
                 return self._handle_upload()
-            if path == "/api/browse/native":
-                return self._handle_native_picker()
+            if path == "/api/output-folder":
+                return self._handle_output_folder()
             return self._send_json(404, {"error": "Not found"})
         except _TooLarge as exc:
             return self._send_json(413, {"error": str(exc)})
@@ -763,32 +767,33 @@ class Handler(BaseHTTPRequestHandler):
         read_and_modify_eml(target, out_target, header_name=header, header_value=value)
         return self._send_json(200, {"filename": out_name, "header": header, "path": out_target})
 
-    def _handle_native_picker(self):
-        """Open the OS native folder chooser (blocks this request thread).
+    def _handle_output_folder(self):
+        """Resolve a picked output folder name to a server output directory.
 
-        Returns 200 {"path": ...} on selection, 200 {"cancelled": True}
-        when the user cancels (not an error), 409 when a picker is already
-        open, or 503 with a typed-path fallback message when no display
-        toolkit is available.
+        The browser's directory picker only reveals the chosen folder's
+        *name* (never its absolute path), so the folder is created/reused by
+        name under the server output root and the effective absolute path is
+        returned. Cancel is handled client-side (no request is sent).
         """
         data = self._read_json()
-        initial_dir = data.get("initial_dir", "")
-        if not isinstance(initial_dir, str):
-            raise _bad("initial_dir must be a string")
+        name = data.get("name", "")
+        if not isinstance(name, str):
+            raise _bad("name must be a string")
+        cleaned = name.strip()
+        if (not cleaned or cleaned in (".", "..") or "\x00" in cleaned
+                or "/" in cleaned or "\\" in cleaned
+                or any(ord(c) < 32 or ord(c) == 127 for c in cleaned)
+                or len(cleaned) > 100):
+            raise _bad("Invalid folder name")
+        root = _output_root()
+        target = os.path.realpath(os.path.join(root, cleaned))
+        if os.path.commonpath([root, target]) != root:
+            raise _bad("Invalid folder name")
         try:
-            selected = choose_output_directory(initial_dir or None)
-        except PickerBusy as exc:
-            return self._send_json(409, {"error": str(exc)})
-        except PickerUnavailable as exc:
-            return self._send_json(503, {"error": f"{exc}; type the folder path instead"})
-        if not selected:
-            return self._send_json(200, {"path": None, "cancelled": True})
-        try:
-            validated = validate_chosen_directory(selected)
-        except (ValueError, FileNotFoundError, NotADirectoryError, PermissionError) as exc:
-            code = 404 if isinstance(exc, FileNotFoundError) else 400
-            return self._send_json(code, {"error": str(exc)})
-        return self._send_json(200, {"path": validated})
+            os.makedirs(target, exist_ok=True)
+        except OSError as exc:
+            raise _bad(f"Could not prepare output folder: {exc}")
+        return self._send_json(200, {"path": target, "name": cleaned})
 
     # Consistent JSON errors for unsupported methods (instead of default HTML 501).
     def do_PUT(self):
