@@ -1,0 +1,130 @@
+{
+  "kind": "tasks#taskLists",
+  "items": [{
+    "create_time": "2025-12-05T10:47:55.294402Z",
+    "kind": "tasks#tasks",
+    "id": "MDcyNDc0NjQ4NjYxOTIwNTA1NjU6MDow",
+    "title": "My Tasks",
+    "updated": "2025-12-08T05:20:50.721279Z",
+    "items": [
+      {
+        "notes": "Call Musa Issack\nApply using docs from KUTRRH website\n",
+        "kind": "tasks#task",
+        "created": "2025-12-07T20:14:17.600498Z",
+        "id": "RTdRU2p2ZWRoRkptMExXag",
+        "title": "KUTRRH Tender",
+        "task_type": "PERSONAL_TASK",
+        "updated": "2025-12-07T20:16:43.136463Z",
+        "selfLink": "https://www.googleapis.com/tasks/v1/lists/MDcyNDc0NjQ4NjYxOTIwNTA1NjU6MDow/tasks/RTdRU2p2ZWRoRkptMExXag",
+        "status": "needsAction"
+      },
+      {
+        "kind": "tasks#task",
+        "created": "2025-12-07T20:14:08.571626Z",
+        "id": "UXJndEdrd200dnNVekpLTw",
+        "title": "Funding ",
+        "task_type": "PERSONAL_TASK",
+        "updated": "2025-12-07T20:14:08.965839Z",
+        "selfLink": "https://www.googleapis.com/tasks/v1/lists/MDcyNDc0NjQ4NjYxOTIwNTA1NjU6MDow/tasks/UXJndEdrd200dnNVekpLTw",
+        "status": "needsAction"
+      },
+      {
+        "parent": "UXJndEdrd200dnNVekpLTw",
+        "kind": "tasks#task",
+        "created": "2025-12-08T05:18:34.935691Z",
+        "id": "V19lU3c2LU9ucGtuTnFfcQ",
+        "title": "Call Musa Hassan",
+        "task_type": "PERSONAL_TASK",
+        "updated": "2025-12-08T05:18:35.443375Z",
+        "selfLink": "https://www.googleapis.com/tasks/v1/lists/MDcyNDc0NjQ4NjYxOTIwNTA1NjU6MDow/tasks/V19lU3c2LU9ucGtuTnFfcQ",
+        "status": "needsAction"
+      },
+      {
+        "parent": "UXJndEdrd200dnNVekpLTw",
+        "kind": "tasks#task",
+        "created": "2025-12-08T05:18:57.718674Z",
+        "id": "UElkQTZydzkwQXg4QjBOVw",
+        "title": "Call him back at 10:30 am",
+        "task_type": "PERSONAL_TASK",
+        "updated": "2025-12-08T05:18:57.845391Z",
+        "selfLink": "https://www.googleapis.com/tasks/v1/lists/MDcyNDc0NjQ4NjYxOTIwNTA1NjU6MDow/tasks/UElkQTZydzkwQXg4QjBOVw",
+        "status": "needsAction"
+      },
+      {
+        "kind": "tasks#task",
+        "created": "2025-12-07T20:13:54.868597Z",
+        "id": "TFZwMUttUm81V2xOdDRtMg",
+        "title": "Tender Award enquiry",
+        "task_type": "PERSONAL_TASK",
+        "updated": "2025-12-07T20:13:55.268687Z",
+        "selfLink": "https://www.googleapis.com/tasks/v1/lists/MDcyNDc0NjQ4NjYxOTIwNTA1NjU6MDow/tasks/TFZwMUttUm81V2xOdDRtMg",
+        "status": "needsAction"
+      },
+      {
+        "parent": "TFZwMUttUm81V2xOdDRtMg",
+        "kind": "tasks#task",
+        "created": "2025-12-08T05:19:14.355596Z",
+        "id": "SGYySVBXbnhJczhJVXI4Qw",
+        "title": "Call Zeinab Procurement",
+        "task_type": "PERSONAL_TASK",
+        "updated": "2025-12-08T05:19:14.499119Z",
+        "selfLink": "https://www.googleapis.com/tasks/v1/lists/MDcyNDc0NjQ4NjYxOTIwNTA1NjU6MDow/tasks/SGYySVBXbnhJczhJVXI4Qw",
+        "status": "needsAction"
+      },
+      {
+        "parent": "TFZwMUttUm81V2xOdDRtMg",
+        "kind": "tasks#task",
+        "created": "2025-12-08T05:19:30.244055Z",
+        "id": "RmJWV0huUk94bTk1ZndhWA",
+        "title": "Call Musa Hassan",
+        "task_type": "PERSONAL_TASK",
+        "updated": "2025-12-08T05:19:30.353871Z",
+        "selfLink": "https://www.googleapis.com/tasks/v1/lists/MDcyNDc0NjQ4NjYxOTIwNTA1NjU6MDow/tasks/RmJWV0huUk94bTk1ZndhWA",
+        "status": "needsAction"
+      },
+      {
+        "kind": "tasks#task",
+        "created": "2025-12-07T20:13:32.849853Z",
+        "id": "NE5RUU5jZ19tQUNldUZKYw",
+        "title": "CRM Google Workspace ",
+        "task_type": "PERSONAL_TASK",
+        "updated": "2025-12-07T20:13:33.249583Z",
+        "selfLink": "https://www.googleapis.com/tasks/v1/lists/MDcyNDc0NjQ4NjYxOTIwNTA1NjU6MDow/tasks/NE5RUU5jZ19tQUNldUZKYw",
+        "status": "needsAction"
+      },
+      {
+        "parent": "NE5RUU5jZ19tQUNldUZKYw",
+        "kind": "tasks#task",
+        "created": "2025-12-08T05:19:40.280335Z",
+        "id": "ZGJ2Y2JnRmJkdFBac0dJeA",
+        "title": "Explore ways of Incorporating Google Workspace in CRM",
+        "task_type": "PERSONAL_TASK",
+        "updated": "2025-12-08T05:20:18.849231Z",
+        "selfLink": "https://www.googleapis.com/tasks/v1/lists/MDcyNDc0NjQ4NjYxOTIwNTA1NjU6MDow/tasks/ZGJ2Y2JnRmJkdFBac0dJeA",
+        "status": "needsAction"
+      },
+      {
+        "parent": "NE5RUU5jZ19tQUNldUZKYw",
+        "kind": "tasks#task",
+        "created": "2025-12-08T05:20:50.209105Z",
+        "id": "VmNjUU5VNFJIZWhIM2xfUQ",
+        "title": "Authentication using Google Workspace?",
+        "task_type": "PERSONAL_TASK",
+        "updated": "2025-12-08T05:20:50.721279Z",
+        "selfLink": "https://www.googleapis.com/tasks/v1/lists/MDcyNDc0NjQ4NjYxOTIwNTA1NjU6MDow/tasks/VmNjUU5VNFJIZWhIM2xfUQ",
+        "status": "needsAction"
+      },
+      {
+        "kind": "tasks#task",
+        "created": "2025-12-07T20:13:14.638993Z",
+        "id": "S1ZUWU40Y1NWbFN6c0FXNQ",
+        "title": "Website Chatbot",
+        "task_type": "PERSONAL_TASK",
+        "updated": "2025-12-07T20:13:15.036735Z",
+        "selfLink": "https://www.googleapis.com/tasks/v1/lists/MDcyNDc0NjQ4NjYxOTIwNTA1NjU6MDow/tasks/S1ZUWU40Y1NWbFN6c0FXNQ",
+        "status": "needsAction"
+      }
+    ],
+    "selfLink": "https://www.googleapis.com/tasks/v1/users/@me/lists/MDcyNDc0NjQ4NjYxOTIwNTA1NjU6MDow"
+  }]
+}

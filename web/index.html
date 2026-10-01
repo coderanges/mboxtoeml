@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>mbox2eml — local MBOX converter</title>
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+<header class="app-header">
+  <div class="app-header-inner">
+    <div>
+      <h1>mbox2eml</h1>
+      <p class="subtitle">Convert a local MBOX archive into individual EML files.</p>
+    </div>
+    <p id="health" class="server-pill" role="status">Connecting…</p>
+  </div>
+  <ol class="steps" aria-label="Workflow">
+    <li id="stepSource" aria-current="step"><span class="step-n">1</span> Source</li>
+    <li id="stepSetup"><span class="step-n">2</span> Setup</li>
+    <li id="stepConvert"><span class="step-n">3</span> Convert</li>
+    <li id="stepResults"><span class="step-n">4</span> Results</li>
+  </ol>
+</header>
+
+<div id="error" class="banner banner-error" hidden role="alert"></div>
+
+<main class="workflow">
+  <!-- 1. Source -->
+  <section class="panel" aria-labelledby="sourceH">
+    <h2 id="sourceH">Source mailbox</h2>
+    <label class="field-label" for="mboxPath">MBOX file — full path on this machine</label>
+    <input id="mboxPath" type="text" spellcheck="false" autocomplete="off"
+      placeholder="/home/user/Takeout/Mail/All mail Including Spam and Trash.mbox" />
+    <div id="dropzone" class="dropzone" tabindex="0" role="button"
+      aria-label="Drop an mbox file here, or press Enter to focus the path field">
+      <p class="drop-hint"><strong>Drop an <code>.mbox</code> file here</strong> or type its server path above.</p>
+      <p class="muted small">Your browser can't share full file paths, so confirm the server path after dropping.</p>
+      <p id="dropFile" class="muted small" hidden></p>
+    </div>
+    <div class="source-meta">
+      <p id="inspectState" class="pill" role="status">Idle — no mailbox selected.</p>
+      <div id="sourceInfo" hidden>
+        <dl class="facts">
+          <dt>File</dt><dd id="srcName"></dd>
+          <dt>Path</dt><dd id="srcPath" class="mono"></dd>
+          <dt>Messages</dt><dd id="srcCount"></dd>
+          <dt>Mailbox size</dt><dd id="srcSize"></dd>
+        </dl>
+        <button id="retryInspect" type="button" hidden>Try again</button>
+      </div>
+    </div>
+    <div id="previewWrap" hidden>
+      <h3>First messages</h3>
+      <table class="tbl">
+        <thead><tr><th scope="col">#</th><th scope="col">Subject</th><th scope="col">From</th><th scope="col">Date</th></tr></thead>
+        <tbody id="previewBody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 2. Setup -->
+  <section class="panel" aria-labelledby="setupH">
+    <h2 id="setupH">Conversion setup</h2>
+    <label class="field-label" for="outputDir">Output directory — full path on this machine</label>
+    <div class="row">
+      <input id="outputDir" type="text" spellcheck="false" autocomplete="off" placeholder="/home/user/mbox-output" />
+      <button id="defaultOutBtn" type="button">Use default</button>
+    </div>
+    <fieldset class="collision">
+      <legend>If an EML file already exists</legend>
+      <label><input type="radio" name="collision" value="rename" checked />
+        <strong>Rename</strong> <span class="muted">— keep both, creating <code>message (2).eml</code>, <code>(3).eml</code>…</span></label>
+      <label><input type="radio" name="collision" value="overwrite" />
+        <strong>Overwrite</strong> <span class="muted">— replace the existing file.</span></label>
+      <label><input type="radio" name="collision" value="skip" />
+        <strong>Skip</strong> <span class="muted">— leave the existing file unchanged.</span></label>
+    </fieldset>
+    <div id="readiness" class="readiness" role="status">
+      <p id="readinessText" class="muted">Enter an MBOX path to begin.</p>
+      <button id="startBtn" class="primary big" disabled>Convert</button>
+    </div>
+  </section>
+
+  <!-- 3. Convert -->
+  <section class="panel" aria-labelledby="convertH" id="convertPanel">
+    <h2 id="convertH">Conversion</h2>
+    <p id="convState" class="pill" role="status" aria-live="polite">Idle.</p>
+    <div class="progress" role="progressbar" aria-label="Conversion progress"
+      aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="progressWrap">
+      <div id="bar"></div>
+    </div>
+    <dl class="stats">
+      <div><dt>Processed</dt><dd id="stProcessed">0 / 0</dd></div>
+      <div><dt>Succeeded</dt><dd id="stOk">0</dd></div>
+      <div><dt>Failed</dt><dd id="stFail">0</dd></div>
+      <div><dt>Skipped</dt><dd id="stSkip">0</dd></div>
+      <div><dt>Elapsed</dt><dd id="stElapsed">0s</dd></div>
+      <div><dt>Remaining</dt><dd id="stEta">—</dd></div>
+    </dl>
+    <p id="curFile" class="mono small muted" aria-live="polite"></p>
+    <div class="row">
+      <button id="cancelBtn" disabled>Cancel conversion</button>
+    </div>
+    <div id="summary" class="summary" hidden role="status"></div>
+  </section>
+
+  <!-- 4. Results -->
+  <section class="panel" aria-labelledby="resultsH">
+    <h2 id="resultsH">Results</h2>
+    <div class="toolbar">
+      <label class="search">Search
+        <input id="search" type="search" placeholder="Subject, sender, recipient, filename…" autocomplete="off" />
+      </label>
+      <div class="seg" role="radiogroup" aria-label="Filter results">
+        <label><input type="radio" name="filter" value="all" checked /> All</label>
+        <label><input type="radio" name="filter" value="ok" /> Successful</label>
+        <label><input type="radio" name="filter" value="error" /> Failed</label>
+        <label><input type="radio" name="filter" value="skipped" /> Skipped</label>
+      </div>
+    </div>
+    <p id="resultsMeta" class="muted small" role="status">No conversion results yet.</p>
+    <ul id="resultsList" class="results"></ul>
+    <div class="row pager">
+      <button id="prevPage" type="button">‹ Previous</button>
+      <span id="pageMeta" class="muted small"></span>
+      <button id="nextPage" type="button">Next ›</button>
+    </div>
+  </section>
+
+  <!-- Viewer -->
+  <section class="panel" aria-labelledby="viewerH">
+    <h2 id="viewerH">Message</h2>
+    <p id="viewerMeta" class="muted">Select a result to read it here.</p>
+    <div id="viewerBody" hidden>
+      <dl class="facts">
+        <dt>File</dt><dd id="vFile" class="mono"></dd>
+        <dt>Subject</dt><dd id="vSubject"></dd>
+        <dt>From</dt><dd id="vFrom"></dd>
+        <dt>To</dt><dd id="vTo"></dd>
+        <dt>Cc</dt><dd id="vCc"></dd>
+        <dt>Reply-To</dt><dd id="vReply"></dd>
+        <dt>Date</dt><dd id="vDate"></dd>
+      </dl>
+      <div class="seg" role="radiogroup" aria-label="Message view" id="viewToggle" hidden>
+        <label><input type="radio" name="view" value="text" checked /> Text</label>
+        <label><input type="radio" name="view" value="html" /> HTML</label>
+      </div>
+      <pre id="vBody" class="body"></pre>
+      <div id="htmlWrap" hidden>
+        <iframe id="vHtml" sandbox="" title="HTML email preview (sandboxed, remote content blocked)"></iframe>
+        <p id="blockedNote" class="muted small"></p>
+      </div>
+      <h3>Attachments</h3>
+      <ul id="vAtt" class="atts"><li class="muted">None</li></ul>
+      <div class="row">
+        <a id="dlLink" class="btn" href="#" download hidden>Download EML</a>
+      </div>
+      <details class="modify">
+        <summary>Modify headers</summary>
+        <p class="muted small">Updates the selected EML through the validated backend. View and modify stay separate: nothing changes until you apply.</p>
+        <div class="row">
+          <label>Header <input id="modHeader" value="To" /></label>
+          <label class="grow">Value <input id="modValue" placeholder="name@example.com" /></label>
+        </div>
+        <div class="row">
+          <label class="grow">Save as (optional) <input id="modOut" placeholder="empty = update the selected file" /></label>
+          <button id="modBtn" class="primary">Apply modification</button>
+        </div>
+        <p id="modMeta" class="muted small" role="status"></p>
+      </details>
+    </div>
+  </section>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>
