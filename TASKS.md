@@ -95,3 +95,10 @@
 - [x] POST /api/browse/mkdir single-level validated creation
 - [x] Native dialog UI: navigate, Up, create, Select/Cancel, Esc, focus states
 - [x] realpath containment enforced; 3 browse tests (navigation, escape/symlink, mkdir)
+
+## 11. Native output folder picker (done)
+- [x] New native_picker.py: stdlib tkinter.filedialog only, per-platform code isolated
+- [x] POST /api/browse/native: 200 path / 200 cancelled / 409 busy / 503 no-display fallback
+- [x] Server-side validation of picked path (realpath, isdir, vanished, permission)
+- [x] Removed GET /api/browse, POST /api/browse/mkdir, dialog, Up/Create, CSS/JS, BrowseTests
+- [x] Browse… fills output field; cancel preserves value silently; narrow stacking verified

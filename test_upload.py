@@ -194,92 +194,174 @@ class UploadTests(unittest.TestCase):
         self.assertIn("enter a server path manually", html.lower())
 
 
-class BrowseTests(unittest.TestCase):
+class NativePickerTests(unittest.TestCase):
     def _server(self):
         httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         t = threading.Thread(target=httpd.serve_forever, daemon=True)
         t.start()
         return httpd, t, f"http://127.0.0.1:{httpd.server_address[1]}"
 
-    def _get(self, base, path):
-        url = base + "/api/browse?path=" + urllib.parse.quote(path)
-        try:
-            with urllib.request.urlopen(url, timeout=5) as r:
-                return r.status, json.loads(r.read().decode())
-        except urllib.error.HTTPError as e:
-            return e.code, json.loads(e.read().decode())
-
-    def _mkdir(self, base, path, name):
+    def _pick(self, base, initial_dir=""):
         req = urllib.request.Request(
-            base + "/api/browse/mkdir", data=json.dumps({"path": path, "name": name}).encode(),
+            base + "/api/browse/native",
+            data=json.dumps({"initial_dir": initial_dir}).encode(),
             headers={"Content-Type": "application/json"}, method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=5) as r:
+            with urllib.request.urlopen(req, timeout=15) as r:
                 return r.status, json.loads(r.read().decode())
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read().decode())
 
-    def test_browse_root_and_navigation(self):
+    def test_native_pick_returns_validated_path(self):
         import server as srv
-        httpd, t, base = self._server()
-        try:
-            code, root = self._get(base, "")
-            self.assertEqual(code, 200)
-            self.assertEqual(root["current"], os.path.realpath(srv._browse_root()))
-            self.assertIsNone(root["parent"])
-            for entry in root["entries"]:
-                self.assertNotIn("/", entry["name"])
-                self.assertFalse(entry["name"].startswith("."))
-            if root["entries"]:
-                code, sub = self._get(base, root["entries"][0]["path"])
+        with tempfile.TemporaryDirectory() as td:
+            orig = srv.choose_output_directory
+            srv.choose_output_directory = lambda initial_dir=None: td
+            httpd, t, base = self._server()
+            try:
+                code, data = self._pick(base, td)
                 self.assertEqual(code, 200)
-                self.assertEqual(sub["parent"], root["current"])
-        finally:
-            httpd.shutdown()
-            t.join(timeout=5)
+                self.assertEqual(data["path"], os.path.realpath(td))
+            finally:
+                srv.choose_output_directory = orig
+                httpd.shutdown()
+                t.join(timeout=5)
 
-    def test_browse_blocks_escape_and_symlinks(self):
+    def test_native_pick_cancel_is_silent_success(self):
         import server as srv
+        orig = srv.choose_output_directory
+        srv.choose_output_directory = lambda initial_dir=None: ""
         httpd, t, base = self._server()
         try:
-            for evil in ("/etc", "../../..", "/tmp", "\x00"):
-                code, _ = self._get(base, evil)
-                self.assertIn(code, (400, 404), evil)
-            with tempfile.TemporaryDirectory() as td:
-                link = os.path.join(srv._browse_root(), ".mbox2eml-test-link")
-                try:
-                    os.symlink(td, link)
-                    code, root = self._get(base, "")
-                    names = [e["name"] for e in root.get("entries", [])]
-                    self.assertNotIn(".mbox2eml-test-link", names)
-                finally:
-                    try:
-                        os.unlink(link)
-                    except OSError:
-                        pass
+            code, data = self._pick(base)
+            self.assertEqual(code, 200)
+            self.assertTrue(data.get("cancelled"))
+            self.assertIsNone(data.get("path"))
+        finally:
+            srv.choose_output_directory = orig
+            httpd.shutdown()
+            t.join(timeout=5)
+
+    def test_native_pick_busy_and_unavailable(self):
+        import server as srv
+        from native_picker import PickerBusy, PickerUnavailable
+        httpd, t, base = self._server()
+        try:
+            orig = srv.choose_output_directory
+            def busy(initial_dir=None):
+                raise PickerBusy("A folder picker is already open")
+            srv.choose_output_directory = busy
+            code, data = self._pick(base)
+            self.assertEqual(code, 409)
+            self.assertIn("error", data)
+            def gone(initial_dir=None):
+                raise PickerUnavailable("Native picker unavailable (no display)")
+            srv.choose_output_directory = gone
+            code, data = self._pick(base)
+            self.assertEqual(code, 503)
+            self.assertIn("type the folder path instead", data["error"])
+            srv.choose_output_directory = orig
         finally:
             httpd.shutdown()
             t.join(timeout=5)
 
-    def test_mkdir_validates_and_creates(self):
-        import shutil
+    def test_old_browse_api_is_gone(self):
         httpd, t, base = self._server()
-        target = os.path.join(os.path.expanduser("~"), "mbox2eml-browse-test")
         try:
-            for bad in ("../x", "a/b", "", ".", "a\x01b"):
-                code, _ = self._mkdir(base, "", bad)
-                self.assertEqual(code, 400, bad)
-            code, data = self._mkdir(base, "", "mbox2eml-browse-test")
-            self.assertEqual(code, 201)
-            self.assertTrue(os.path.isdir(target))
-            code, _ = self._mkdir(base, "", "mbox2eml-browse-test")
-            self.assertEqual(code, 400)  # already exists
-            code, listing = self._get(base, "")
-            self.assertIn("mbox2eml-browse-test", [e["name"] for e in listing["entries"]])
+            try:
+                urllib.request.urlopen(base + "/api/browse?path=", timeout=5)
+                self.fail("expected HTTP error")
+            except urllib.error.HTTPError as e:
+                self.assertEqual(e.code, 404)
+            req = urllib.request.Request(
+                base + "/api/browse/mkdir", data=json.dumps({"path": "", "name": "x"}).encode(),
+                headers={"Content-Type": "application/json"}, method="POST")
+            try:
+                urllib.request.urlopen(req, timeout=5)
+                self.fail("expected HTTP error")
+            except urllib.error.HTTPError as e:
+                self.assertEqual(e.code, 404)
         finally:
-            shutil.rmtree(target, ignore_errors=True)
             httpd.shutdown()
             t.join(timeout=5)
+
+    def test_picked_path_flows_into_conversion(self):
+        import server as srv
+        with tempfile.TemporaryDirectory() as td:
+            mp = Path(td) / "s.mbox"
+            with open(mp, "wb") as f:
+                f.write(_mbox_bytes(1))
+            out = str(Path(td) / "picked-out")
+            os.makedirs(out)
+            orig = srv.choose_output_directory
+            srv.choose_output_directory = lambda initial_dir=None: out
+            httpd, t, base = self._server()
+            try:
+                code, data = self._pick(base, out)
+                self.assertEqual(code, 200)
+                req = urllib.request.Request(
+                    base + "/api/convert",
+                    data=json.dumps({"mbox_path": str(mp), "output_dir": data["path"],
+                                     "collision": "overwrite"}).encode(),
+                    headers={"Content-Type": "application/json"}, method="POST")
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    self.assertEqual(r.status, 202)
+                self.assertTrue(os.path.isdir(out))
+            finally:
+                srv.choose_output_directory = orig
+                httpd.shutdown()
+                t.join(timeout=5)
+
+
+class ValidateChosenDirectoryTests(unittest.TestCase):
+    def test_accepts_real_directory(self):
+        from native_picker import validate_chosen_directory
+        with tempfile.TemporaryDirectory() as td:
+            self.assertEqual(validate_chosen_directory(td), os.path.realpath(td))
+
+    def test_rejects_bad_paths(self):
+        from native_picker import validate_chosen_directory
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaises(ValueError):
+                validate_chosen_directory("")
+            with self.assertRaises(ValueError):
+                validate_chosen_directory("a\x00b")
+            with self.assertRaises(FileNotFoundError):
+                validate_chosen_directory(os.path.join(td, "vanished"))
+            f = os.path.join(td, "file.txt")
+            with open(f, "w") as handle:
+                handle.write("x")
+            with self.assertRaises(NotADirectoryError):
+                validate_chosen_directory(f)
+
+    def test_rejects_inaccessible_directory(self):
+        from native_picker import validate_chosen_directory
+        with tempfile.TemporaryDirectory() as td:
+            target = os.path.join(td, "locked")
+            os.makedirs(target, mode=0)
+            try:
+                if os.geteuid() == 0:
+                    self.skipTest("root bypasses permission bits")
+                with self.assertRaises(PermissionError):
+                    validate_chosen_directory(target)
+            finally:
+                os.chmod(target, 0o700)
+
+
+class NativeFrontendContractTests(unittest.TestCase):
+    def test_browse_button_uses_native_bridge(self):
+        html = Path("web/index.html").read_text()
+        js = Path("web/app.js").read_text()
+        css = Path("web/styles.css").read_text()
+        self.assertIn('id="browseOutBtn"', html)
+        self.assertIn("/api/browse/native", js)
+        self.assertIn("Choosing", js)  # busy state while the OS dialog is open
+        # custom in-browser folder browser is gone
+        self.assertNotIn("browseDialog", html)
+        self.assertNotIn("browseDialog", js)
+        self.assertNotIn("/api/browse?", js)
+        self.assertNotIn("/api/browse/mkdir", js)
+        self.assertNotIn("browse-list", html + css)
 
 
 if __name__ == "__main__":

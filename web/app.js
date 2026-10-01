@@ -261,75 +261,34 @@ dz.addEventListener("keydown", (e) => {
 });
 dz.addEventListener("click", () => $("pickBtn").click());
 
-// ---------- output folder picker (scoped server-side browser) ----------
-const browseDialog = $("browseDialog");
-let browseCurrent = "";
-async function browseLoad(path) {
-  $("browseMeta").textContent = "Loading…";
+// ---------- output folder picker (native OS dialog via server bridge) ----------
+$("browseOutBtn").addEventListener("click", async () => {
+  const btn = $("browseOutBtn");
+  if (btn.disabled) return;
+  showError("");
+  btn.disabled = true;
+  const original = btn.textContent;
+  btn.textContent = "Choosing\u2026";
   try {
-    const info = await api(`/api/browse?path=${encodeURIComponent(path || "")}`);
-    browseCurrent = info.current;
-    $("browseCurrent").textContent = info.current;
-    $("browseMeta").textContent = info.truncated ? `Showing first ${info.entries.length} folders.` : "";
-    $("browseUp").disabled = !info.parent;
-    const ul = $("browseList");
-    ul.textContent = "";
-    if (!info.entries.length) {
-      const li = document.createElement("li");
-      li.className = "empty";
-      li.textContent = "No subfolders here. Create one below or select this folder.";
-      ul.appendChild(li);
-    }
-    for (const e of info.entries) {
-      const li = document.createElement("li");
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.textContent = `📁 ${e.name}`;
-      btn.setAttribute("aria-label", `Open ${e.name}`);
-      btn.addEventListener("click", () => browseLoad(e.path));
-      li.appendChild(btn);
-      ul.appendChild(li);
+    const current = $("outputDir").value.trim();
+    const r = await api("/api/browse/native", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ initial_dir: current }),
+    });
+    if (r.cancelled) return; // user dismissed the native dialog: keep previous value
+    if (r.path) {
+      $("outputDir").value = r.path;
+      S.destination.dir = r.path;
+      renderReadiness();
+      $("outputDir").focus();
     }
   } catch (e) {
-    $("browseMeta").textContent = e.message;
+    showError(e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
   }
-}
-$("browseOutBtn").addEventListener("click", () => {
-  showError("");
-  browseLoad($("outputDir").value.trim());
-  $("browseNew").value = "";
-  if (typeof browseDialog.showModal === "function") browseDialog.showModal();
-  else showError("Folder picker is not supported in this browser; type the path instead.");
-  $("browseSelect").focus();
 });
-$("browseUp").addEventListener("click", async () => {
-  // Navigate up by asking the server for the parent (never computed client-side).
-  try {
-    const info = await api(`/api/browse?path=${encodeURIComponent(browseCurrent)}`);
-    if (info.parent) browseLoad(info.parent);
-  } catch (e) { $("browseMeta").textContent = e.message; }
-});
-$("browseCreate").addEventListener("click", async () => {
-  const name = $("browseNew").value.trim();
-  if (!name) { $("browseMeta").textContent = "Enter a folder name first."; return; }
-  try {
-    const r = await api("/api/browse/mkdir", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path: browseCurrent, name }),
-    });
-    $("browseNew").value = "";
-    await browseLoad(r.path);
-  } catch (e) { $("browseMeta").textContent = e.message; }
-});
-$("browseSelect").addEventListener("click", () => {
-  if (!browseCurrent) return;
-  $("outputDir").value = browseCurrent;
-  S.destination.dir = browseCurrent;
-  browseDialog.close();
-  renderReadiness();
-  $("outputDir").focus();
-});
-$("browseClose").addEventListener("click", () => browseDialog.close());
 
 // ---------- destination + collision ----------
 $("outputDir").addEventListener("input", () => {

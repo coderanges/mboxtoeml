@@ -80,26 +80,11 @@
   <section class="panel" aria-labelledby="setupH">
     <h2 id="setupH">Conversion setup</h2>
     <label class="field-label" for="outputDir">Output directory — full path on this machine</label>
-    <div class="row">
+    <div class="row output-row">
       <input id="outputDir" type="text" spellcheck="false" autocomplete="off" placeholder="/home/user/mbox-output" />
       <button id="browseOutBtn" type="button">Browse…</button>
       <button id="defaultOutBtn" type="button">Use default</button>
     </div>
-    <dialog id="browseDialog" aria-labelledby="browseH">
-      <h2 id="browseH">Choose output folder</h2>
-      <p id="browseCurrent" class="mono small muted"></p>
-      <p id="browseMeta" class="muted small" role="status"></p>
-      <ul id="browseList" class="browse-list"></ul>
-      <div class="row">
-        <button id="browseUp" type="button">‹ Up</button>
-        <label class="grow">New folder <input id="browseNew" type="text" placeholder="export-2026" autocomplete="off" /></label>
-        <button id="browseCreate" type="button">Create</button>
-      </div>
-      <div class="row browse-actions">
-        <button id="browseSelect" class="primary" type="button">Select this folder</button>
-        <button id="browseClose" type="button">Cancel</button>
-      </div>
-    </dialog>
     <fieldset class="collision">
       <legend>If an EML file already exists</legend>
       <label><input type="radio" name="collision" value="rename" checked />
