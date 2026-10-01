@@ -4,14 +4,15 @@
 const $ = (id) => document.getElementById(id);
 
 const S = {
-  source: { path: "", droppedName: "", droppedSize: null },
-  inspection: { status: "idle", info: null, error: "" }, // idle|inspecting|ready|failed
+  source: { mode: null, uploadId: "", filename: "", path: "" }, // mode: 'upload' | 'path'
+  inspection: { status: "idle", info: null, error: "" }, // idle|inspecting|ready|failed|uploading
   destination: { dir: "", collision: "rename" },
   conversion: { jobId: null, status: "idle", detail: null, cancelling: false, t0: 0, timer: null },
   stream: { es: null, poll: null },
   results: { filter: "all", query: "", dateFrom: "", dateTo: "", offset: 0, limit: 25 },
   viewer: { filename: null, eml: null, tab: "text" },
 };
+let uploadXhr = null;
 
 function showError(msg) {
   const el = $("error");
@@ -57,18 +58,109 @@ fetch("/api/health")
   .then(() => { $("health").textContent = "Server: connected"; })
   .catch(() => { $("health").textContent = "Server: unreachable"; });
 
-// ---------- source + automatic inspection ----------
+// ---------- source: Pick File (primary), drag-and-drop (convenience) ----------
 let inspectTimer = null;
 let inspectSeq = 0;
 
+function sourceRef() {
+  // What inspect/convert should send for the current source, or null.
+  if (S.source.mode === "upload" && S.source.uploadId) {
+    return { upload_id: S.source.uploadId };
+  }
+  const path = $("mboxPath").value.trim();
+  if (path) return { mbox_path: path };
+  return null;
+}
+
+$("pickBtn").addEventListener("click", () => $("fileInput").click());
+$("fileInput").addEventListener("change", () => {
+  const f = $("fileInput").files && $("fileInput").files[0];
+  $("fileInput").value = "";
+  if (f) uploadFile(f);
+});
+
+function uploadFile(file) {
+  if (uploadXhr) { showError("An upload is already in progress."); return; }
+  if (!/\.mbox$/i.test(file.name || "")) {
+    showError(`"${file.name}" is not an .mbox file.`);
+    return;
+  }
+  showError("");
+  S.source = { mode: "upload", uploadId: "", filename: file.name, path: "" };
+  S.inspection = { status: "uploading", info: null, error: "" };
+  renderInspection();
+  renderReadiness();
+  $("uploadWrap").hidden = false;
+  $("uploadCancel").disabled = false;
+  $("pickBtn").disabled = true;
+
+  const xhr = new XMLHttpRequest();
+  uploadXhr = xhr;
+  xhr.open("POST", "/api/uploads");
+  xhr.setRequestHeader("Content-Type", "application/octet-stream");
+  xhr.setRequestHeader("X-Filename", file.name);
+  xhr.upload.addEventListener("progress", (e) => {
+    if (!e.lengthComputable) return;
+    const pct = Math.round((e.loaded / e.total) * 100);
+    $("uploadBar").style.width = `${pct}%`;
+    $("uploadProgress").setAttribute("aria-valuenow", String(pct));
+    $("uploadMeta").textContent = `Uploading ${file.name} — ${fmtBytes(e.loaded)} of ${fmtBytes(e.total)} (${pct}%)`;
+  });
+  xhr.addEventListener("load", () => {
+    uploadXhr = null;
+    $("pickBtn").disabled = false;
+    let data = {};
+    try { data = JSON.parse(xhr.responseText || "{}"); } catch { /* handled below */ }
+    if (xhr.status >= 200 && xhr.status < 300 && data.upload_id) {
+      S.source.uploadId = data.upload_id;
+      S.source.filename = data.filename || file.name;
+      $("uploadMeta").textContent = `Uploaded ${S.source.filename} (${fmtBytes(data.size_bytes)}). Inspecting…`;
+      inspectNow();
+    } else {
+      S.source = { mode: null, uploadId: "", filename: "", path: "" };
+      S.inspection = { status: "failed", info: null, error: data.error || `Upload failed (${xhr.status}).` };
+      $("uploadWrap").hidden = true;
+      renderInspection();
+      renderReadiness();
+    }
+  });
+  xhr.addEventListener("error", () => {
+    uploadXhr = null;
+    $("pickBtn").disabled = false;
+    S.source = { mode: null, uploadId: "", filename: "", path: "" };
+    S.inspection = { status: "failed", info: null, error: "Upload failed: connection error." };
+    $("uploadWrap").hidden = true;
+    renderInspection();
+    renderReadiness();
+  });
+  xhr.addEventListener("abort", () => {
+    uploadXhr = null;
+    $("pickBtn").disabled = false;
+    S.source = { mode: null, uploadId: "", filename: "", path: "" };
+    S.inspection = { status: "idle", info: null, error: "" };
+    $("uploadWrap").hidden = true;
+    renderInspection();
+    renderReadiness();
+  });
+  xhr.send(file);
+}
+$("uploadCancel").addEventListener("click", () => {
+  if (uploadXhr) uploadXhr.abort();
+});
+
 $("mboxPath").addEventListener("input", () => {
-  S.source.path = $("mboxPath").value.trim();
+  // Manual server path is a fallback; typing here replaces any upload.
+  if (uploadXhr) uploadXhr.abort();
+  $("uploadWrap").hidden = true;
+  const path = $("mboxPath").value.trim();
+  S.source = path
+    ? { mode: "path", uploadId: "", filename: "", path }
+    : { mode: null, uploadId: "", filename: "", path: "" };
   scheduleInspect();
 });
 function scheduleInspect() {
   clearTimeout(inspectTimer);
-  const path = $("mboxPath").value.trim();
-  if (!path) {
+  if (!sourceRef()) {
     S.inspection = { status: "idle", info: null, error: "" };
     renderInspection();
     renderReadiness();
@@ -82,14 +174,16 @@ function scheduleInspect() {
 }
 async function inspectNow() {
   const seq = ++inspectSeq;
-  const path = $("mboxPath").value.trim();
-  if (!path) return;
-  S.inspection = { status: "inspecting", info: null, error: "" };
-  renderInspection();
+  const ref = sourceRef();
+  if (!ref) return;
+  if (S.inspection.status !== "uploading") {
+    S.inspection = { status: "inspecting", info: null, error: "" };
+    renderInspection();
+  }
   try {
     const info = await api("/api/inspect", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mbox_path: path, limit: 8 }),
+      body: JSON.stringify({ ...ref, limit: 8 }),
     });
     if (seq !== inspectSeq) return; // stale response
     S.inspection = { status: "ready", info, error: "" };
@@ -97,9 +191,11 @@ async function inspectNow() {
       $("outputDir").value = info.suggested_output;
       S.destination.dir = info.suggested_output;
     }
+    $("uploadWrap").hidden = true;
   } catch (e) {
     if (seq !== inspectSeq) return;
     S.inspection = { status: "failed", info: null, error: e.message };
+    $("uploadWrap").hidden = true;
   }
   renderInspection();
   renderReadiness();
@@ -114,13 +210,14 @@ function renderInspection() {
   } else if (st === "inspecting") {
     setPill(pill, "Inspecting mailbox…", "busy");
     wrap.hidden = true; $("retryInspect").hidden = true;
+  } else if (st === "uploading") {
+    setPill(pill, `Uploading ${S.source.filename || "mailbox"}…`, "busy");
+    wrap.hidden = true; $("retryInspect").hidden = true;
   } else if (st === "ready") {
     const info = S.inspection.info;
     setPill(pill, `Ready — ${info.total} messages · ${fmtBytes(info.size_bytes)}`, "ok");
     wrap.hidden = false; $("retryInspect").hidden = true;
-    const full = info.mbox_path || $("mboxPath").value.trim();
-    $("srcName").textContent = full.split(/[/\\]/).pop() || full;
-    $("srcPath").textContent = full;
+    $("srcName").textContent = info.source_name || S.source.filename || "mailbox";
     $("srcCount").textContent = String(info.total);
     $("srcSize").textContent = fmtBytes(info.size_bytes);
     $("previewWrap").hidden = false;
@@ -138,9 +235,12 @@ function renderInspection() {
     wrap.hidden = true; $("previewWrap").hidden = true; $("retryInspect").hidden = false;
   }
 }
-$("retryInspect").addEventListener("click", () => inspectNow());
+$("retryInspect").addEventListener("click", () => {
+  if (S.source.mode === "upload" && !S.source.uploadId) return;
+  inspectNow();
+});
 
-// ---------- drag and drop (path confirmation required) ----------
+// ---------- drag and drop (same upload pipeline as Pick File) ----------
 const dz = $("dropzone");
 ["dragenter", "dragover"].forEach((ev) => dz.addEventListener(ev, (e) => {
   e.preventDefault(); dz.classList.add("over");
@@ -150,29 +250,16 @@ const dz = $("dropzone");
 }));
 dz.addEventListener("drop", (e) => {
   const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-  const note = $("dropFile");
   if (!f) return;
-  S.source.droppedName = f.name || "";
-  S.source.droppedSize = f.size;
+  const note = $("dropFile");
   note.hidden = false;
-  if (!/\.mbox$/i.test(f.name)) {
-    note.textContent = `Rejected "${f.name}": expected an .mbox file.`;
-    showError(`"${f.name}" is not an .mbox file.`);
-    return;
-  }
-  showError("");
-  note.textContent = `Dropped "${f.name}" (${fmtBytes(f.size)}) in the browser. Confirm its full server path above, then inspection runs automatically.`;
-  $("mboxPath").focus();
-  if (!$("mboxPath").value.trim()) {
-    S.inspection = { status: "failed", info: null, error: `Dropped "${f.name}", but the browser cannot share its server path — type the full path above.` };
-    renderInspection();
-    renderReadiness();
-  }
+  note.textContent = `Dropped "${f.name}".`;
+  uploadFile(f);
 });
 dz.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("mboxPath").focus(); }
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("pickBtn").click(); }
 });
-dz.addEventListener("click", () => $("mboxPath").focus());
+dz.addEventListener("click", () => $("pickBtn").click());
 
 // ---------- destination + collision ----------
 $("outputDir").addEventListener("input", () => {
@@ -185,33 +272,44 @@ document.querySelectorAll('input[name="collision"]').forEach((r) => {
     renderReadiness();
   });
 });
-$("defaultOutBtn").addEventListener("click", () => {
-  const m = $("mboxPath").value.trim();
-  if (!m) { showError("Enter an MBOX path first to derive a default."); return; }
-  const idx = Math.max(m.lastIndexOf("/"), m.lastIndexOf("\\"));
-  const dir = idx >= 0 ? m.slice(0, idx) : ".";
-  $("outputDir").value = `${dir}/output`;
-  S.destination.dir = $("outputDir").value.trim();
+$("defaultOutBtn").addEventListener("click", async () => {
+  // Path sources derive the default from the mailbox location; uploads use
+  // the server-provided default since the browser file has no server path.
+  const pathMode = S.source.mode === "path" || $("mboxPath").value.trim();
+  if (pathMode) {
+    const m = $("mboxPath").value.trim();
+    if (!m) { showError("Enter an MBOX path first to derive a default."); return; }
+    const idx = Math.max(m.lastIndexOf("/"), m.lastIndexOf("\\"));
+    const dir = idx >= 0 ? m.slice(0, idx) : ".";
+    $("outputDir").value = `${dir}/output`;
+    S.destination.dir = $("outputDir").value.trim();
+    renderReadiness();
+    return;
+  }
+  try {
+    const d = await api("/api/defaults");
+    $("outputDir").value = d.output_dir;
+    S.destination.dir = d.output_dir;
+  } catch (e) { showError(e.message); }
   renderReadiness();
 });
 
 function readiness() {
   const insp = S.inspection.status === "ready" ? S.inspection.info : null;
   const out = $("outputDir").value.trim();
-  if (!insp) return { ok: false, text: "Inspect a mailbox to continue." };
+  if (!insp) return { ok: false, text: "Pick an MBOX file to continue." };
   if (!out) return { ok: false, text: "Choose an output directory to continue." };
   const coll = document.querySelector('input[name="collision"]:checked').value;
   const label = { rename: "Rename", overwrite: "Overwrite", skip: "Skip" }[coll] || coll;
+  const name = insp.source_name || S.source.filename || "mailbox";
   return {
     ok: true,
-    text: `${insp.total} messages · ${fmtBytes(insp.size_bytes)} → ${out} · ${label}`,
+    text: `${name} · ${insp.total} messages · ${fmtBytes(insp.size_bytes)} → ${out} · ${label}`,
   };
 }
 function renderReadiness() {
   const r = readiness();
-  $("readinessText").textContent = r.ok
-    ? `Ready: ${r.text}`
-    : ($("mboxPath").value.trim() ? r.text : "Enter an MBOX path to begin.");
+  $("readinessText").textContent = r.ok ? `Ready: ${r.text}` : r.text;
   $("startBtn").disabled = !r.ok || S.conversion.status === "running";
   if (r.ok) setStep("setup");
 }
@@ -222,10 +320,12 @@ $("startBtn").addEventListener("click", async () => {
   const r = readiness();
   if (!r.ok) { showError(r.text); return; }
   try {
+    const ref = sourceRef();
+    if (!ref) { showError("Pick an MBOX file first."); return; }
     const { job_id } = await api("/api/convert", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        mbox_path: $("mboxPath").value.trim(),
+        ...ref,
         output_dir: $("outputDir").value.trim(),
         collision: document.querySelector('input[name="collision"]:checked').value,
       }),

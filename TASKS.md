@@ -81,3 +81,11 @@
 - [ ] Results UI: From/To + Clear, server-side, pagination-safe, `date_from > date_to` clean error
 - [ ] Tests: attachments, HTML bypasses, 13 date-filter cases via HTTP
 - [ ] Regression: full suite + Takeout smoke (search, date filter, view, HTML, modify, download, SSE/poll, cancel, atomic collisions, spill, eviction, traversal, no tracebacks)
+
+## 9. Pick File primary selection (done)
+- [x] POST /api/uploads streams raw bytes to private staging (chunked, never fully buffered)
+- [x] .mbox extension + From-line magic validation, empty/oversize (413)/bad-type rejected
+- [x] Opaque upload_id tokens (no paths); inspect/convert accept upload_id or mbox_path
+- [x] Pick MBOX button primary with progress + cancel; drag-and-drop reuses same pipeline
+- [x] Manual server path kept as fallback; server-provided default output for uploads
+- [x] Staged-file age cleanup; traversal/format validation; 7 upload tests

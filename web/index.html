@@ -29,21 +29,38 @@
   <!-- 1. Source -->
   <section class="panel" aria-labelledby="sourceH">
     <h2 id="sourceH">Source mailbox</h2>
-    <label class="field-label" for="mboxPath">MBOX file — full path on this machine</label>
-    <input id="mboxPath" type="text" spellcheck="false" autocomplete="off"
-      placeholder="/home/user/Takeout/Mail/All mail Including Spam and Trash.mbox" />
+    <p class="muted small">Pick an <code>.mbox</code> file from this device. It is uploaded to the local converter for processing.</p>
+    <div class="row">
+      <button id="pickBtn" class="primary big" type="button">Pick MBOX file…</button>
+      <input id="fileInput" type="file" accept=".mbox" hidden />
+    </div>
+    <div id="uploadWrap" hidden>
+      <div class="progress" role="progressbar" aria-label="Upload progress"
+        aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="uploadProgress">
+        <div id="uploadBar"></div>
+      </div>
+      <div class="row">
+        <span id="uploadMeta" class="muted small" role="status"></span>
+        <button id="uploadCancel" type="button">Cancel upload</button>
+      </div>
+    </div>
     <div id="dropzone" class="dropzone" tabindex="0" role="button"
-      aria-label="Drop an mbox file here, or press Enter to focus the path field">
-      <p class="drop-hint"><strong>Drop an <code>.mbox</code> file here</strong> or type its server path above.</p>
-      <p class="muted small">Your browser can't share full file paths, so confirm the server path after dropping.</p>
+      aria-label="Drop an mbox file here to upload it, or press Enter to pick a file">
+      <p class="drop-hint"><strong>Or drop an <code>.mbox</code> file here</strong></p>
       <p id="dropFile" class="muted small" hidden></p>
     </div>
+    <details class="path-fallback">
+      <summary>Or enter a server path manually</summary>
+      <label class="field-label" for="mboxPath">MBOX file — full path on this machine</label>
+      <input id="mboxPath" type="text" spellcheck="false" autocomplete="off"
+        placeholder="/home/user/Takeout/Mail/All mail Including Spam and Trash.mbox" />
+      <p class="muted small">Useful for mailboxes too large to upload, already stored on this machine.</p>
+    </details>
     <div class="source-meta">
       <p id="inspectState" class="pill" role="status">Idle — no mailbox selected.</p>
       <div id="sourceInfo" hidden>
         <dl class="facts">
           <dt>File</dt><dd id="srcName"></dd>
-          <dt>Path</dt><dd id="srcPath" class="mono"></dd>
           <dt>Messages</dt><dd id="srcCount"></dd>
           <dt>Mailbox size</dt><dd id="srcSize"></dd>
         </dl>

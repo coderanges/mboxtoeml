@@ -81,6 +81,8 @@ button:not(:disabled):hover, .btn:hover { border-color: var(--accent); }
 }
 .dropzone.over { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, transparent); }
 .drop-hint { margin: 0 0 4px; }
+.path-fallback { margin-top: 10px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; }
+.path-fallback summary { cursor: pointer; font-size: 13px; color: var(--muted); }
 .pill {
   display: inline-block; margin: 10px 0 0; padding: 4px 12px;
   border: 1px solid var(--line); border-radius: 99px; font-size: 12.5px;

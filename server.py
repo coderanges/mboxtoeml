@@ -7,6 +7,8 @@ import argparse
 import datetime
 import json
 import os
+import re
+import tempfile
 import threading
 import time
 import traceback
@@ -27,6 +29,16 @@ MAX_FINISHED_JOBS = 50
 _jobs = {}
 _jobs_lock = threading.Lock()
 
+# Staged uploads from Pick File / drag-and-drop. Browser file inputs never
+# expose server paths, so picked files are streamed to this private staging
+# directory and referenced by opaque upload_id tokens (never by path).
+_UPLOAD_DIR = os.path.join(tempfile.gettempdir(), "mbox2eml-uploads")
+_UPLOAD_MAX_BYTES = 2 * 1024 * 1024 * 1024
+_UPLOAD_MAX_AGE_SECS = 24 * 3600
+_UPLOAD_ID_RE = re.compile(r"^[0-9a-f]{16}$")
+_uploads = {}
+_uploads_lock = threading.Lock()
+
 STATIC_TYPES = {
     ".html": "text/html; charset=utf-8",
     ".js": "application/javascript; charset=utf-8",
@@ -40,6 +52,14 @@ STATIC_FILES = {"index.html", "app.js", "styles.css"}
 
 def _bad(message):
     return ValueError(message)
+
+
+class _TooLarge(ValueError):
+    pass
+
+
+def _too_large():
+    return _TooLarge("Uploaded file exceeds the 2 GB limit")
 
 
 def validate_mbox_path(raw):
@@ -127,6 +147,74 @@ def resolve_job_file(job, filename):
     return target
 
 
+# ---------- upload staging (Pick File / drag-and-drop) ----------
+
+def _upload_dir():
+    os.makedirs(_UPLOAD_DIR, mode=0o700, exist_ok=True)
+    return _UPLOAD_DIR
+
+
+def _cleanup_uploads():
+    """Delete staged files older than _UPLOAD_MAX_AGE_SECS (best effort)."""
+    now = time.time()
+    try:
+        names = os.listdir(_UPLOAD_DIR)
+    except OSError:
+        return
+    with _uploads_lock:
+        known = set(_uploads)
+    for name in names:
+        if not name.endswith(".mbox"):
+            continue
+        path = os.path.join(_UPLOAD_DIR, name)
+        try:
+            if now - os.path.getmtime(path) < _UPLOAD_MAX_AGE_SECS:
+                continue
+            os.unlink(path)
+        except OSError:
+            continue
+        with _uploads_lock:
+            for uid, meta in list(_uploads.items()):
+                if meta.get("path") == path:
+                    _uploads.pop(uid, None)
+    # drop registry entries whose files vanished
+    with _uploads_lock:
+        for uid, meta in list(_uploads.items()):
+            if uid not in known and not os.path.isfile(meta.get("path", "")):
+                _uploads.pop(uid, None)
+
+
+def validate_upload_id(raw):
+    if not isinstance(raw, str) or not _UPLOAD_ID_RE.match(raw):
+        raise _bad("Unknown or expired upload")
+    with _uploads_lock:
+        meta = _uploads.get(raw)
+    if meta is None or not os.path.isfile(meta.get("path", "")):
+        raise FileNotFoundError("Upload not found or expired")
+    return meta["path"]
+
+
+def _resolve_source(data):
+    """Resolve the conversion source from an upload_id token or a server path.
+
+    Returns (abs_path, source_label) where source_label describes the origin
+    for UI display without leaking internals.
+    """
+    upload_id = data.get("upload_id", "")
+    if upload_id:
+        if not isinstance(upload_id, str):
+            raise _bad("upload_id must be a string")
+        path = validate_upload_id(upload_id)
+        with _uploads_lock:
+            filename = _uploads.get(upload_id, {}).get("filename", "upload.mbox")
+        return path, filename
+    raw_path = data.get("mbox_path", "")
+    if not isinstance(raw_path, str):
+        raise _bad("mbox_path must be a string")
+    path = validate_mbox_path(raw_path.strip())
+    return path, os.path.basename(path)
+
+
 def job_status_payload(job):
     with job["lock"]:
         elapsed = (job["finished_at"] or time.time()) - job["started_at"]
@@ -137,6 +225,7 @@ def job_status_payload(job):
             "job_id": job["job_id"],
             "status": job["status"],
             "mbox_path": job["mbox_path"],
+            "source_name": job.get("source_label", os.path.basename(job["mbox_path"])),
             "output_dir": job["output_dir"],
             "collision": job["collision"],
             "total": total,
@@ -259,7 +348,7 @@ def _run_conversion_job(job):
             job["finished_at"] = time.time()
 
 
-def create_job(mbox_path, output_dir, collision):
+def create_job(mbox_path, output_dir, collision, source_label=None):
     mbox_path = validate_mbox_path(mbox_path)
     output_dir = validate_output_dir(output_dir, create=True)
     collision = validate_collision(collision)
@@ -268,6 +357,7 @@ def create_job(mbox_path, output_dir, collision):
         "job_id": job_id,
         "status": "running",
         "mbox_path": mbox_path,
+        "source_label": source_label or os.path.basename(mbox_path),
         "output_dir": output_dir,
         "collision": collision,
         "total": 0,
@@ -379,6 +469,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._serve_static(path.lstrip("/"))
             if path == "/api/health":
                 return self._send_json(200, {"ok": True})
+            if path == "/api/defaults":
+                home = os.path.expanduser("~")
+                base = home if os.path.isdir(home) else os.getcwd()
+                return self._send_json(200, {"output_dir": os.path.join(base, "mbox2eml-output")})
             if path.startswith("/api/jobs/") and path.endswith("/events"):
                 parts = path.split("/")
                 # /api/jobs/<id>/events
@@ -422,7 +516,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_cancel(parts[3])
             if path == "/api/eml/modify":
                 return self._handle_eml_modify()
+            if path == "/api/uploads":
+                return self._handle_upload()
             return self._send_json(404, {"error": "Not found"})
+        except _TooLarge as exc:
+            return self._send_json(413, {"error": str(exc)})
         except (ValueError, TypeError, AttributeError, FileNotFoundError, OSError) as exc:
             code = 404 if isinstance(exc, FileNotFoundError) else 400
             return self._send_json(code, {"error": str(exc)})
@@ -431,23 +529,105 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(500, {"error": "Internal server error"})
 
     # ----- handlers -----
+    def _handle_upload(self):
+        """Receive a raw mbox byte stream (Pick File / drag-and-drop).
+
+        The browser sends the file bytes as the request body with an
+        ``X-Filename`` header. The stream is written to a private staging
+        directory in fixed-size chunks (never fully buffered in RAM) and
+        referenced afterwards only through an opaque ``upload_id`` token.
+        """
+        _cleanup_uploads()
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype not in ("application/octet-stream", "application/x-mbox"):
+            raise _bad("Upload must be raw bytes (Content-Type: application/octet-stream)")
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            raise _bad("Upload requires a valid Content-Length")
+        if length <= 0:
+            raise _bad("Uploaded file is empty")
+        if length > _UPLOAD_MAX_BYTES:
+            raise _too_large()
+        raw_name = self.headers.get("X-Filename", "")
+        if not isinstance(raw_name, str):
+            raise _bad("Missing X-Filename header")
+        filename = os.path.basename(raw_name.strip().replace("\\", "/"))
+        if not filename or filename in (".", "..") or "\x00" in filename:
+            raise _bad("Missing X-Filename header")
+        if any(ord(c) < 32 or ord(c) == 127 for c in filename):
+            raise _bad("Invalid filename (control characters)")
+        if not filename.lower().endswith(".mbox"):
+            raise _bad(f"Rejected {filename!r}: expected an .mbox file")
+
+        upload_id = uuid.uuid4().hex[:16]
+        staged = os.path.join(_upload_dir(), upload_id + ".mbox")
+        written = 0
+        try:
+            with open(staged, "wb") as handle:
+                remaining = length
+                while remaining > 0:
+                    chunk = self.rfile.read(min(65536, remaining))
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+                    written += len(chunk)
+                    remaining -= len(chunk)
+                    if written > _UPLOAD_MAX_BYTES:
+                        raise _too_large()
+        except _TooLarge:
+            try:
+                os.unlink(staged)
+            except OSError:
+                pass
+            raise
+        except OSError as exc:
+            try:
+                os.unlink(staged)
+            except OSError:
+                pass
+            raise _bad(f"Could not store upload: {exc}")
+        if written != length:
+            try:
+                os.unlink(staged)
+            except OSError:
+                pass
+            raise _bad("Upload was truncated; please try again")
+        # Validate it actually looks like an mbox (must start with a From line).
+        try:
+            with open(staged, "rb") as handle:
+                magic = handle.read(5)
+        except OSError:
+            magic = b""
+        if magic != b"From ":
+            try:
+                os.unlink(staged)
+            except OSError:
+                pass
+            raise _bad(f"Rejected {filename!r}: file does not look like an mbox archive")
+        with _uploads_lock:
+            _uploads[upload_id] = {"path": staged, "filename": filename,
+                                   "size_bytes": written, "created": time.time()}
+        return self._send_json(201, {"upload_id": upload_id, "filename": filename,
+                                     "size_bytes": written})
+
     def _handle_inspect(self):
         data = self._read_json()
-        raw_path = data.get("mbox_path", "")
-        if not isinstance(raw_path, str):
-            raise _bad("mbox_path must be a string")
-        mbox_path = raw_path.strip()
+        mbox_path, source_name = _resolve_source(data)
         limit = data.get("limit", 50)
         try:
             limit = int(limit)
         except (TypeError, ValueError):
             raise _bad("limit must be an integer")
-        info = inspect_mbox(validate_mbox_path(mbox_path), limit=limit)
+        info = inspect_mbox(mbox_path, limit=limit)
+        info["source_name"] = source_name
         return self._send_json(200, info)
 
     def _handle_convert(self):
         data = self._read_json()
-        job = create_job(data.get("mbox_path", ""), data.get("output_dir", ""), data.get("collision", "overwrite"))
+        mbox_path, source_name = _resolve_source(data)
+        job = create_job(mbox_path, data.get("output_dir", ""),
+                         data.get("collision", "overwrite"), source_label=source_name)
         return self._send_json(202, {"job_id": job["job_id"]})
 
     def _handle_job_status(self, job_id):
