@@ -122,6 +122,81 @@ def _date_bounds(date_from, date_to):
     return start, end_exclusive
 
 
+def _browse_root():
+    """Scoped root for the folder picker: the user's home, else the CWD."""
+    home = os.path.expanduser("~")
+    base = home if os.path.isdir(home) else os.getcwd()
+    return os.path.realpath(base)
+
+
+def _browse_resolve(raw):
+    """Resolve a browse/mkdir path, confined to the browse root."""
+    root = _browse_root()
+    if not raw:
+        candidate = root
+    else:
+        if not isinstance(raw, str) or "\x00" in raw:
+            raise _bad("Invalid path")
+        candidate = os.path.realpath(os.path.join(root, os.path.expanduser(raw)))
+        # Absolute user input is honored only if it stays inside the root.
+        if os.path.isabs(raw.strip()):
+            candidate = os.path.realpath(raw.strip())
+    if os.path.commonpath([root, candidate]) != root:
+        raise _bad("Path is outside the browsable area")
+    return root, candidate
+
+
+def browse_directories(raw):
+    """List subdirectories of a browsed path (names only, no file reads)."""
+    root, current = _browse_resolve(raw)
+    try:
+        names = sorted(os.listdir(current))
+    except FileNotFoundError:
+        raise FileNotFoundError("Directory not found")
+    except (NotADirectoryError, PermissionError):
+        raise _bad("Cannot list this directory")
+    entries = []
+    for name in names:
+        if name.startswith("."):
+            continue
+        full = os.path.join(current, name)
+        try:
+            if os.path.isdir(full) and not os.path.islink(full):
+                entries.append({"name": name, "path": full})
+        except OSError:
+            continue
+        if len(entries) >= 500:
+            break
+    parent = None
+    if current != root:
+        parent = os.path.dirname(current)
+    return {"current": current, "parent": parent, "root": root,
+            "entries": entries, "truncated": len(entries) >= 500}
+
+
+def make_browse_directory(raw_parent, raw_name):
+    """Create one subdirectory level inside the browsable area."""
+    if not isinstance(raw_name, str):
+        raise _bad("Invalid folder name")
+    name = raw_name.strip()
+    if (not name or name in (".", "..") or "\x00" in name
+            or "/" in name or "\\" in name
+            or any(ord(c) < 32 or ord(c) == 127 for c in name)
+            or len(name) > 100):
+        raise _bad("Invalid folder name")
+    _, parent = _browse_resolve(raw_parent)
+    if not os.path.isdir(parent):
+        raise FileNotFoundError("Parent directory not found")
+    target = os.path.join(parent, name)
+    try:
+        os.makedirs(target, exist_ok=False)
+    except FileExistsError:
+        raise _bad("A folder with that name already exists")
+    except OSError as exc:
+        raise _bad(f"Could not create folder: {exc}")
+    return target
+
+
 def validate_job_filename(raw):
     if not isinstance(raw, str) or not raw or "\x00" in raw:
         raise _bad("Invalid filename")
@@ -493,6 +568,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_eml_get(query)
             if path == "/api/eml/download":
                 return self._handle_eml_download(query)
+            if path == "/api/browse":
+                raw = (query.get("path") or [""])[0]
+                return self._send_json(200, browse_directories(raw))
             return self._send_json(404, {"error": "Not found"})
         except (ValueError, TypeError, AttributeError, FileNotFoundError, OSError) as exc:
             code = 404 if isinstance(exc, FileNotFoundError) else 400
@@ -518,6 +596,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_eml_modify()
             if path == "/api/uploads":
                 return self._handle_upload()
+            if path == "/api/browse/mkdir":
+                return self._handle_browse_mkdir()
             return self._send_json(404, {"error": "Not found"})
         except _TooLarge as exc:
             return self._send_json(413, {"error": str(exc)})
@@ -759,6 +839,15 @@ class Handler(BaseHTTPRequestHandler):
             raise _bad("Output filename escapes output directory")
         read_and_modify_eml(target, out_target, header_name=header, header_value=value)
         return self._send_json(200, {"filename": out_name, "header": header, "path": out_target})
+
+    def _handle_browse_mkdir(self):
+        data = self._read_json()
+        parent = data.get("path", "")
+        name = data.get("name", "")
+        if not isinstance(parent, str) or not isinstance(name, str):
+            raise _bad("path and name must be strings")
+        target = make_browse_directory(parent, name)
+        return self._send_json(201, {"path": target, "name": name})
 
     # Consistent JSON errors for unsupported methods (instead of default HTML 501).
     def do_PUT(self):

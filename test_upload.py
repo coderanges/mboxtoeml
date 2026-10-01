@@ -6,6 +6,7 @@ import tempfile
 import threading
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from email.message import EmailMessage
 from http.server import ThreadingHTTPServer
@@ -191,6 +192,94 @@ class UploadTests(unittest.TestCase):
         self.assertIn('id="dropzone"', html)
         # manual server path kept as a fallback, not the primary control
         self.assertIn("enter a server path manually", html.lower())
+
+
+class BrowseTests(unittest.TestCase):
+    def _server(self):
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        t = threading.Thread(target=httpd.serve_forever, daemon=True)
+        t.start()
+        return httpd, t, f"http://127.0.0.1:{httpd.server_address[1]}"
+
+    def _get(self, base, path):
+        url = base + "/api/browse?path=" + urllib.parse.quote(path)
+        try:
+            with urllib.request.urlopen(url, timeout=5) as r:
+                return r.status, json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read().decode())
+
+    def _mkdir(self, base, path, name):
+        req = urllib.request.Request(
+            base + "/api/browse/mkdir", data=json.dumps({"path": path, "name": name}).encode(),
+            headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.status, json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read().decode())
+
+    def test_browse_root_and_navigation(self):
+        import server as srv
+        httpd, t, base = self._server()
+        try:
+            code, root = self._get(base, "")
+            self.assertEqual(code, 200)
+            self.assertEqual(root["current"], os.path.realpath(srv._browse_root()))
+            self.assertIsNone(root["parent"])
+            for entry in root["entries"]:
+                self.assertNotIn("/", entry["name"])
+                self.assertFalse(entry["name"].startswith("."))
+            if root["entries"]:
+                code, sub = self._get(base, root["entries"][0]["path"])
+                self.assertEqual(code, 200)
+                self.assertEqual(sub["parent"], root["current"])
+        finally:
+            httpd.shutdown()
+            t.join(timeout=5)
+
+    def test_browse_blocks_escape_and_symlinks(self):
+        import server as srv
+        httpd, t, base = self._server()
+        try:
+            for evil in ("/etc", "../../..", "/tmp", "\x00"):
+                code, _ = self._get(base, evil)
+                self.assertIn(code, (400, 404), evil)
+            with tempfile.TemporaryDirectory() as td:
+                link = os.path.join(srv._browse_root(), ".mbox2eml-test-link")
+                try:
+                    os.symlink(td, link)
+                    code, root = self._get(base, "")
+                    names = [e["name"] for e in root.get("entries", [])]
+                    self.assertNotIn(".mbox2eml-test-link", names)
+                finally:
+                    try:
+                        os.unlink(link)
+                    except OSError:
+                        pass
+        finally:
+            httpd.shutdown()
+            t.join(timeout=5)
+
+    def test_mkdir_validates_and_creates(self):
+        import shutil
+        httpd, t, base = self._server()
+        target = os.path.join(os.path.expanduser("~"), "mbox2eml-browse-test")
+        try:
+            for bad in ("../x", "a/b", "", ".", "a\x01b"):
+                code, _ = self._mkdir(base, "", bad)
+                self.assertEqual(code, 400, bad)
+            code, data = self._mkdir(base, "", "mbox2eml-browse-test")
+            self.assertEqual(code, 201)
+            self.assertTrue(os.path.isdir(target))
+            code, _ = self._mkdir(base, "", "mbox2eml-browse-test")
+            self.assertEqual(code, 400)  # already exists
+            code, listing = self._get(base, "")
+            self.assertIn("mbox2eml-browse-test", [e["name"] for e in listing["entries"]])
+        finally:
+            shutil.rmtree(target, ignore_errors=True)
+            httpd.shutdown()
+            t.join(timeout=5)
 
 
 if __name__ == "__main__":

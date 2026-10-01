@@ -89,6 +89,27 @@ button:not(:disabled):hover, .btn:hover { border-color: var(--accent); }
 .drop-hint { margin: 0 0 4px; }
 .path-fallback { margin-top: 10px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; }
 .path-fallback summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+dialog {
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--panel); color: var(--ink); padding: 18px;
+  width: min(560px, calc(100vw - 40px)); max-height: min(70vh, 560px);
+  display: flex; flex-direction: column; gap: 8px;
+}
+dialog:not([open]) { display: none; }
+dialog::backdrop { background: rgba(0, 0, 0, 0.35); }
+dialog h2 { margin: 0; font-size: 16px; }
+.browse-list {
+  list-style: none; margin: 0; padding: 0; display: grid; gap: 4px;
+  overflow-y: auto; min-height: 120px; border: 1px solid var(--line);
+  border-radius: 8px; padding: 8px;
+}
+.browse-list button {
+  width: 100%; text-align: left; border: 0; border-radius: 6px;
+  overflow-wrap: anywhere;
+}
+.browse-list button:hover { border-color: transparent; background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.browse-list .empty { color: var(--muted); font-size: 13px; padding: 6px 8px; }
+.browse-actions { justify-content: flex-end; }
 .pill {
   display: inline-block; margin: 10px 0 0; padding: 4px 12px;
   border: 1px solid var(--line); border-radius: 99px; font-size: 12.5px;

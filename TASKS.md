@@ -89,3 +89,9 @@
 - [x] Pick MBOX button primary with progress + cancel; drag-and-drop reuses same pipeline
 - [x] Manual server path kept as fallback; server-provided default output for uploads
 - [x] Staged-file age cleanup; traversal/format validation; 7 upload tests
+
+## 10. Output folder picker (done)
+- [x] Scoped server browser: GET /api/browse (home-rooted, folders only, no dotfiles/symlinks/file reads, 500 cap)
+- [x] POST /api/browse/mkdir single-level validated creation
+- [x] Native dialog UI: navigate, Up, create, Select/Cancel, Esc, focus states
+- [x] realpath containment enforced; 3 browse tests (navigation, escape/symlink, mkdir)
